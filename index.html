@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-Uf74jGJiD3Qmp0guiNoTlkQuQaB8/T9If3p5UUlsTQkStnMswaok2rwXbfba+71o';
+               script-src 'self' cdn.jsdelivr.net 'sha384-Odj4RSknPI81IzBVr0K6KfKx60A0EzSWwiMtqnsZX909Gj1/WHawrhJrxS0MF7vJ';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -212,7 +212,7 @@ body {
 <div class="header">
   <h1>⚡ 資產戰情室</h1>
   <div class="header-right">
-    <button class="btn-google disconnected" id="btn-google" onclick="handleGoogleBtn()">
+    <button class="btn-google disconnected" id="btn-google">
       🔗 連結 Google
     </button>
     <div class="quote-status">
@@ -234,8 +234,8 @@ body {
     此值只存在你的瀏覽器，不會出現在程式碼或 GitHub。</p>
     <input class="modal-input" id="secret-input" type="password" placeholder="GOCSPX-...">
     <div class="modal-btns">
-      <button class="modal-btn-cancel" onclick="closeSecretModal()">取消</button>
-      <button class="modal-btn-ok" onclick="confirmSecret()">確認連結 Google</button>
+      <button class="modal-btn-cancel" id="secret-cancel">取消</button>
+      <button class="modal-btn-ok" id="secret-confirm">確認連結 Google</button>
     </div>
   </div>
 </div>
@@ -385,8 +385,8 @@ body {
     <div id="customFields"></div>
 
     <div class="btn-row">
-      <button class="btn-save" onclick="addSnapshot()">💾 新增快照</button>
-      <button class="btn-add-field" onclick="addCustomField()">＋ 自訂欄位</button>
+      <button class="btn-save" id="btn-save-snapshot">💾 新增快照</button>
+      <button class="btn-add-field" id="btn-add-field">＋ 自訂欄位</button>
     </div>
   </div>
 </div>
@@ -1677,7 +1677,7 @@ function renderSnapshots() {
           0050 ${s.tw0050} / 006208 ${s.tw006208} / 友達 ${s.auo}<br>
           現金 ${fmtW(s.cash)}
         </div>
-        <button class="snap-del" onclick="deleteSnapshot(${i})">✕</button>
+        <button class="snap-del" data-idx="${i}">✕</button>
       </div>`;
     }).join('');
   }
@@ -1713,7 +1713,7 @@ function addCustomField() {
   div.innerHTML = `
     <div class="input-group"><label>標的名稱</label><input type="text" placeholder="e.g. 台積電"></div>
     <div class="input-group"><label>數量 / 金額</label><input type="number" placeholder="0"></div>
-    <button class="btn-remove-row" onclick="document.getElementById('cf-${cCount}').remove()">✕</button>`;
+    <button class="btn-remove-row">✕</button>`;
   document.getElementById('customFields').appendChild(div);
 }
 
@@ -1777,7 +1777,28 @@ updateClock();
     syncFromSheets();
   }
 
-  // Wire up holding inputs: auto-save + live recalculate
+  // ── 靜態按鈕事件綁定（取代 HTML 的 onclick 屬性，符合 CSP hash 規範）────
+  document.getElementById('btn-google')     .addEventListener('click', handleGoogleBtn);
+  document.getElementById('secret-cancel')  .addEventListener('click', closeSecretModal);
+  document.getElementById('secret-confirm') .addEventListener('click', confirmSecret);
+  document.getElementById('btn-save-snapshot').addEventListener('click', addSnapshot);
+  document.getElementById('btn-add-field')  .addEventListener('click', addCustomField);
+
+  // ── 快照刪除：事件委派（renderSnapshots 動態產生的按鈕無法預先綁定）────────
+  document.getElementById('snapshotList').addEventListener('click', e => {
+    const btn = e.target.closest('.snap-del');
+    if (!btn) return;
+    const i = parseInt(btn.dataset.idx, 10);
+    if (!isNaN(i)) deleteSnapshot(i);
+  });
+
+  // ── 自訂欄位移除：事件委派（addCustomField 動態產生的按鈕）──────────────
+  document.getElementById('customFields').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-remove-row');
+    if (btn) btn.closest('.custom-asset-row').remove();
+  });
+
+  // ── 持倉輸入：自動儲存 + 即時重算 ─────────────────────────────────────
   HOLDINGS_KEYS.forEach(k => {
     document.getElementById('f-' + k).addEventListener('input', () => {
       saveHoldings();
