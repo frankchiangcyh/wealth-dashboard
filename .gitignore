@@ -1,1 +1,4 @@
 *.txt
+
+# Claude Code 工具設定（可能含 session token 等敏感資訊）
+.claude/

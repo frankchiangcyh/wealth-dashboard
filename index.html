@@ -3,9 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Content Security Policy：限制可執行的腳本來源與連線對象，防止 XSS 攻擊 -->
+<!-- 注意：frame-ancestors 只在 HTTP header 有效，此處 meta 僅供文件化參考 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'unsafe-inline' cdn.jsdelivr.net;
+               style-src 'self' 'unsafe-inline';
+               connect-src https://query1.finance.yahoo.com
+                           https://query2.finance.yahoo.com
+                           https://api.allorigins.win
+                           https://corsproxy.io
+                           https://oauth2.googleapis.com
+                           https://sheets.googleapis.com
+                           https://accounts.google.com;
+               img-src 'self' data:;
+               font-src 'self';">
 <title>資產戰情室</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+        integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"
+        integrity="sha384-3N9GHhCtN3CQef6tNfqgZlv7sQLYIkcChN+uaTZ7xVdzKYp/SjBNPxa92+hM7EAY"
+        crossorigin="anonymous"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -401,14 +420,17 @@ const TICKER_MAP = {
 // 持倉輸入欄位對應的 key 清單（用來批次讀取/寫入）
 const HOLDINGS_KEYS = ['vt','bnd','tw0050','tw006208','auo','cash','mortgage','months'];
 
-// localStorage 的 key 名稱集中管理，避免拼錯字
+// localStorage / sessionStorage 的 key 名稱集中管理，避免拼錯字
+// 【安全設計】access_token → sessionStorage（關分頁即清除）
+//             refresh_token → localStorage（跨 session 持久）
 const LS = {
-  HOLDINGS: 'wd_holdings',      // 持倉數量（股數、現金、房貸）
-  SNAPS:    'wd_snapshots',     // 歷史快照列表
-  PRICES:   'wd_prices',        // 報價快取（離線時使用）
-  TOKENS:   'wd_tokens',        // Google OAuth access/refresh token
-  PKCE:     'wd_pkce',          // PKCE 驗證用的 code_verifier
-  SECRET:   'wd_client_secret'  // OAuth 用戶端密鑰（第一次連結時由使用者輸入）
+  HOLDINGS: 'wd_holdings',       // localStorage:    持倉數量（股數、現金、房貸）
+  SNAPS:    'wd_snapshots',      // localStorage:    歷史快照列表
+  PRICES:   'wd_prices',         // localStorage:    報價快取（離線時使用）
+  TOKENS:   'wd_tokens',         // sessionStorage:  access_token（關閉分頁自動清除）
+  REFRESH:  'wd_refresh_token',  // localStorage:    refresh_token（持久，供自動換 token）
+  PKCE:     'wd_pkce',           // localStorage:    PKCE 驗證用的 code_verifier（暫存）
+  SECRET:   'wd_client_secret'   // localStorage:    OAuth 用戶端密鑰（首次輸入後保存）
 };
 
 // 報價自動刷新間隔：每 5 分鐘更新一次
@@ -877,7 +899,7 @@ function drawFireChart() {
   }
 
   // ── 圖表標注設定 ────────────────────────────────────────────
-  const RETIREMENT_YEAR = 2032;  // 生日 1982/7/26，50 歲退休年份
+  const RETIREMENT_YEAR = 2032;  // 預計退休年份（可依個人計畫修改）
 
   // 目標門檻水平虛線
   const annotations = {
@@ -1035,27 +1057,50 @@ function isConfigured() {
       && SHEET_ID  !== 'YOUR_SHEET_ID_HERE';
 }
 
-// 將 Google 回傳的 token 存入 localStorage，並計算到期時間
+// 將 Google 回傳的 token 分開存放
+// 【安全設計】access_token 存 sessionStorage → 關閉分頁即清除，大幅縮短竊取視窗
+//             refresh_token 存 localStorage  → 持久保存，讓使用者不需每天重新登入
 function saveTokens(t) {
   t.expires_at = Date.now() + (t.expires_in ?? 3600) * 1000;  // 預設 1 小時後到期
-  localStorage.setItem(LS.TOKENS, JSON.stringify(t));
+  // access_token → sessionStorage（短效、關分頁即消失）
+  sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+    access_token: t.access_token,
+    expires_at:   t.expires_at
+  }));
+  // refresh_token → localStorage（長效持久，用於自動換新 access_token）
+  if (t.refresh_token) {
+    localStorage.setItem(LS.REFRESH, t.refresh_token);
+  }
 }
 
-// 從 localStorage 讀取 token，失敗回傳 null
+// 從 sessionStorage + localStorage 合併讀取 token
+// 回傳格式：{ access_token, expires_at, refresh_token }，兩者皆無則回傳 null
 function loadTokens() {
-  try { return JSON.parse(localStorage.getItem(LS.TOKENS)); } catch(e) { return null; }
+  try {
+    const session = JSON.parse(sessionStorage.getItem(LS.TOKENS) || 'null');
+    const refresh = localStorage.getItem(LS.REFRESH);
+    if (!session?.access_token && !refresh) return null;
+    return {
+      access_token:  session?.access_token ?? null,
+      expires_at:    session?.expires_at   ?? 0,
+      refresh_token: refresh
+    };
+  } catch(e) { return null; }
 }
 
 // 清除所有 token（登出時使用）
 function clearTokens() {
-  localStorage.removeItem(LS.TOKENS);
-  localStorage.removeItem(LS.PKCE);
+  sessionStorage.removeItem(LS.TOKENS);   // 清除 access_token
+  localStorage.removeItem(LS.REFRESH);    // 清除 refresh_token
+  localStorage.removeItem(LS.PKCE);       // 清除 PKCE verifier
 }
 
-// 判斷目前是否已登入（localStorage 有 access_token 即視為登入）
+// 判斷目前是否已登入
+// 【邏輯】有 access_token 或 refresh_token 其中之一即視為已登入
+// 只有 refresh_token 時，getAccessToken() 會自動換新的 access_token
 function isAuthenticated() {
   const t = loadTokens();
-  return !!(t?.access_token);
+  return !!(t?.access_token || t?.refresh_token);
 }
 
 // ── PKCE 工具函式 ────────────────────────────────────────────
@@ -1206,10 +1251,11 @@ async function getAccessToken() {
     });
     const data = await res.json();
     if (data.access_token) {
-      // 更新 access_token 並存回 localStorage
-      t.access_token = data.access_token;
-      t.expires_at   = Date.now() + (data.expires_in ?? 3600) * 1000;
-      localStorage.setItem(LS.TOKENS, JSON.stringify(t));
+      // 新 access_token 只存 sessionStorage（不異動 refresh_token）
+      sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+        access_token: data.access_token,
+        expires_at:   Date.now() + (data.expires_in ?? 3600) * 1000
+      }));
       return data.access_token;
     }
   } catch(e) {}
@@ -1479,6 +1525,24 @@ updateClock();
 
 // ── INIT ───────────────────────────────────────────────────
 (async function init() {
+
+  // ── 舊版 token 格式遷移（v1 → v2）───────────────────────────
+  // v1 版本將 access_token + refresh_token 全存在 localStorage['wd_tokens']
+  // v2 起改為分離：access_token → sessionStorage，refresh_token → localStorage
+  // 此段確保舊裝置升級後不需重新登入
+  const legacyToken = localStorage.getItem(LS.TOKENS);
+  if (legacyToken) {
+    try {
+      const t = JSON.parse(legacyToken);
+      if (t.refresh_token) localStorage.setItem(LS.REFRESH, t.refresh_token);
+      if (t.access_token)  sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+        access_token: t.access_token,
+        expires_at:   t.expires_at ?? 0
+      }));
+    } catch(e) {}
+    localStorage.removeItem(LS.TOKENS);  // 清除舊格式，完成遷移
+  }
+
   loadHoldings();
   loadSnapshots();
   updateGoogleStatus();
