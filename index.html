@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-CdfxMZ4xJIbkq7Omb6m+POTopcGtVLsdEWb+asqLa4VEesAB3pj/Qk7TX0J/T7su';
+               script-src 'self' cdn.jsdelivr.net 'sha384-Uf74jGJiD3Qmp0guiNoTlkQuQaB8/T9If3p5UUlsTQkStnMswaok2rwXbfba+71o';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -314,6 +314,13 @@ body {
       <div class="slider-val" id="sv-target">3,000</div>
     </div>
   </div>
+  <!-- 歷史報酬參考面板：fetchHistoricalReturns() 成功後自動顯示 -->
+  <div id="return-ref-panel" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid #21262d;">
+    <div style="font-size:12px; color:#6e7681; margin-bottom:6px;">
+      📊 歷史年化報酬參考（Yahoo Finance 實際數據，<span style="color:#d29922">過去不代表未來</span>）
+    </div>
+    <div id="return-ref-content" style="font-size:13px; line-height:2;"></div>
+  </div>
 </div>
 
 <!-- Row 3: 報價 + 持倉輸入 -->
@@ -471,6 +478,9 @@ let pricesReady = false;
 // Chart.js 圖表實例（null 表示尚未建立）
 let donutChart = null;  // 資產配置圓餅圖
 let fireChart  = null;  // 退休模擬折線圖
+
+// 各標的歷史年化報酬快取（fetchHistoricalReturns 抓到後存這裡，供持倉更新時重算加權）
+let returnRefData = null;
 
 // ╔══════════════════════════════════════════════════════════╗
 // ║                    工具函式                               ║
@@ -694,6 +704,130 @@ async function fetchQuotes() {
 }
 
 // ╔══════════════════════════════════════════════════════════╗
+// ║              歷史年化報酬參考數據                          ║
+// ║  從 Yahoo Finance 抓取各標的真實歷史報酬，供滑桿參考使用   ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 計算單一標的的 CAGR（複合年化成長率）
+// sym: Yahoo Finance 代號（如 'VT'）；years: 回溯年數（5 或 10）
+// 回傳：小數形式的年化報酬率（如 0.124 = 12.4%），失敗回傳 null
+async function fetchCAGR(sym, years) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1mo&range=${years}y`;
+  try {
+    const json = await tryFetch(url, 12000);
+    const result = json?.chart?.result?.[0];
+    if (!result) return null;
+
+    // 取出月收盤價，過濾掉 null 和異常值
+    const closes = result.indicators?.quote?.[0]?.close ?? [];
+    const valid  = closes.filter(p => p != null && isFinite(p) && p > 0);
+    if (valid.length < 12) return null;  // 至少需要 1 年資料
+
+    // CAGR = (終值 / 始值)^(1 / 實際年數) - 1
+    const actualYears = valid.length / 12;
+    const cagr = Math.pow(valid[valid.length - 1] / valid[0], 1 / actualYears) - 1;
+
+    // 合理性驗證：報酬率不應超過 ±200%，否則視為資料異常
+    return (isFinite(cagr) && Math.abs(cagr) < 2) ? cagr : null;
+  } catch(e) {
+    return null;
+  }
+}
+
+// 同時抓取所有持倉標的的 5 年與 10 年 CAGR（全部平行請求，加快速度）
+async function fetchHistoricalReturns() {
+  const symbols = ['VT', 'BND', '0050.TW', '006208.TW'];
+  const results = {};
+
+  // 8 個請求同時發出（4 標的 × 2 年期）
+  await Promise.all(
+    symbols.flatMap(sym =>
+      [5, 10].map(async years => {
+        const cagr = await fetchCAGR(sym, years);
+        if (cagr !== null) {
+          if (!results[sym]) results[sym] = {};
+          results[sym][years] = cagr;
+        }
+      })
+    )
+  );
+
+  return Object.keys(results).length ? results : null;
+}
+
+// 將歷史報酬數據渲染到模擬圖下方的參考面板
+// 同時根據目前持倉比例計算「加權估算報酬率」
+function renderReturnRef(data) {
+  const panel   = document.getElementById('return-ref-panel');
+  const content = document.getElementById('return-ref-content');
+  if (!panel || !content || !data) return;
+
+  // ── 依目前持倉比例計算加權 5 年估算 ────────────────────────
+  let weighted5y = null;
+  if (pricesReady) {
+    const h    = getCurrentHoldings();
+    const vtV  = h.vt      * prices.vt      * prices.usdtwd;
+    const bndV = h.bnd     * prices.bnd     * prices.usdtwd;
+    const t50V = h.tw0050  * prices.tw0050;
+    const t6V  = h.tw006208* prices.tw006208;
+    const total = vtV + bndV + t50V + t6V;
+
+    if (total > 0) {
+      let w5 = 0;
+      let coveredWeight = 0;
+      const add = (val, key) => {
+        if (data[key]?.[5] != null) {
+          w5 += (val / total) * data[key][5];
+          coveredWeight += val / total;
+        }
+      };
+      add(vtV,  'VT');
+      add(bndV, 'BND');
+      add(t50V, '0050.TW');
+      add(t6V,  '006208.TW');
+      // 只有超過 50% 持倉有歷史資料時，加權估算才有意義
+      if (coveredWeight > 0.5) weighted5y = w5 / coveredWeight;
+    }
+  }
+
+  // ── 格式化工具 ──────────────────────────────────────────────
+  const fmtPct = v => v == null ? '—'
+    : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+  const col = v => v == null ? '#6e7681'
+    : v >= 0.05 ? '#3fb950'   // > 5% 綠
+    : v >= 0    ? '#d29922'   // 0~5% 黃
+    : '#f85149';              // 負值紅
+
+  // ── 逐標的渲染 ──────────────────────────────────────────────
+  const names = { 'VT':'VT', 'BND':'BND', '0050.TW':'0050', '006208.TW':'006208' };
+  let html = '<div style="display:flex; flex-wrap:wrap; gap:6px 24px; align-items:center;">';
+
+  ['VT', 'BND', '0050.TW', '006208.TW'].forEach(sym => {
+    const d = data[sym];
+    if (!d) return;
+    html += `<span>
+      <span style="color:#e6edf3; font-weight:600;">${names[sym]}</span>`;
+    if (d[5]  != null) html += ` <span style="color:${col(d[5])}">5年&thinsp;${fmtPct(d[5])}</span>`;
+    if (d[10] != null) html += ` <span style="color:${col(d[10])}; opacity:0.65;">10年&thinsp;${fmtPct(d[10])}</span>`;
+    html += '</span>';
+  });
+
+  // ── 加權估算區塊 ────────────────────────────────────────────
+  if (weighted5y != null) {
+    html += `
+    <span style="padding-left:14px; border-left:1px solid #30363d;">
+      <span style="color:#8b949e;">▶ 你的配置加權估算</span>
+      <span style="color:${col(weighted5y)}; font-weight:700; font-size:15px;"> ${fmtPct(weighted5y)}</span>
+      <span style="color:#6e7681; font-size:11px;">（5年歷史均值）</span>
+    </span>`;
+  }
+
+  html += '</div>';
+  content.innerHTML = html;
+  panel.style.display = 'block';
+}
+
+// ╔══════════════════════════════════════════════════════════╗
 // ║                    資產計算                               ║
 // ╚══════════════════════════════════════════════════════════╝
 
@@ -830,6 +964,8 @@ function refreshAll() {
 
   updateQuoteTable();
   drawFireChart();
+  // 持倉改變時重算加權估算（returnRefData 已快取，不重新發 API 請求）
+  if (returnRefData) renderReturnRef(returnRefData);
 }
 
 // ╔══════════════════════════════════════════════════════════╗
@@ -1649,9 +1785,17 @@ updateClock();
     });
   });
 
-  // Fetch live quotes
+  // Fetch live quotes（每 5 分鐘自動更新）
   fetchQuotes();
   setInterval(fetchQuotes, QUOTE_REFRESH_MS);
+
+  // 抓取歷史年化報酬參考資料（一次性，不需週期更新）
+  // 不 await，在背景非同步執行，不阻塞頁面載入
+  fetchHistoricalReturns().then(data => {
+    if (!data) return;
+    returnRefData = data;   // 快取，供持倉更新時重算加權
+    renderReturnRef(data);  // 首次渲染
+  });
 })();
 </script>
 </body>
