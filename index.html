@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-Odj4RSknPI81IzBVr0K6KfKx60A0EzSWwiMtqnsZX909Gj1/WHawrhJrxS0MF7vJ';
+               script-src 'self' cdn.jsdelivr.net 'sha384-kNaavxCF0vRd5ztWmuRdO3MviFqqHNpxhuH9shj5wMoUSj5ZXCAcHVSTVtORLdnF';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1556,6 +1556,7 @@ async function syncFromSheets() {
     })).filter(s => s.date && isFinite(s.net) && s.net !== 0);  // 過濾日期格式錯誤或零值
     saveSnapshots();
     renderSnapshots();
+    restoreLatestSnapshot();  // Sheets 可能有比本機更新的快照，同步後立即還原
   } catch(e) {
     showAlert('⚠ Google Sheets 讀取失敗：' + e.message);
   }
@@ -1616,6 +1617,24 @@ function loadSnapshots() {
       }))
       .filter(s => s.date && isFinite(s.net) && s.net !== 0);
   } catch(e) { snapshots = []; }
+}
+
+// 從最近一筆快照還原所有持倉輸入欄位
+// 每次開啟 app（本機快照）或從 Google Sheets 同步完成後自動呼叫
+// 邏輯：snapshots 陣列最後一筆即為最新紀錄（按時間順序排列）
+function restoreLatestSnapshot() {
+  if (!snapshots.length) return;  // 沒有任何快照則不動作
+
+  const latest = snapshots[snapshots.length - 1];
+
+  // 將最新快照的各欄位填回輸入框
+  HOLDINGS_KEYS.forEach(k => {
+    const el = document.getElementById('f-' + k);
+    if (el && latest[k] != null) el.value = latest[k];
+  });
+
+  saveHoldings();           // 同步更新 localStorage，維持一致性
+  if (pricesReady) refreshAll();  // 若報價已就緒，立即重算淨資產
 }
 
 // ╔══════════════════════════════════════════════════════════╗
@@ -1747,8 +1766,13 @@ updateClock();
     localStorage.removeItem(LS.TOKENS);  // 清除舊格式，完成遷移
   }
 
-  loadHoldings();
+  // 載入順序：先快照 → 若有快照則從最新快照還原持倉；無快照才用舊的 savedHoldings
   loadSnapshots();
+  if (snapshots.length) {
+    restoreLatestSnapshot();   // 有快照：從最新快照填入欄位（不依賴 savedHoldings）
+  } else {
+    loadHoldings();            // 無快照：退回到上次手動儲存的持倉（初次使用）
+  }
   updateGoogleStatus();
 
   // Restore cached prices for immediate display
