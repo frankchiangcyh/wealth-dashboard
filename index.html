@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!-- Content Security Policy：限制可執行的腳本來源與連線對象，防止 XSS 攻擊 -->
 <!-- 注意：frame-ancestors 只在 HTTP header 有效，此處 meta 僅供文件化參考 -->
+<!-- ⚠ 每次修改 JS 區塊後需重新計算 script hash 並更新下方 sha384 值 -->
+<!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' 'unsafe-inline' cdn.jsdelivr.net;
+               script-src 'self' cdn.jsdelivr.net 'sha384-CdfxMZ4xJIbkq7Omb6m+POTopcGtVLsdEWb+asqLa4VEesAB3pj/Qk7TX0J/T7su';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -507,6 +509,28 @@ function hideAlert() {
 }
 
 // ╔══════════════════════════════════════════════════════════╗
+// ║                  輸入驗證工具函式                          ║
+// ║  防止 NaN、Infinity、超大值、惡意字串進入計算或存入 Sheets  ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 安全數值轉換
+// - 非數字、NaN、Infinity 一律回傳 0
+// - 強制限制在 [min, max] 範圍內，防止極端值污染計算
+function safeNum(val, min = 0, max = 1e10) {
+  const n = Number(val);
+  if (!isFinite(n) || isNaN(n)) return 0;
+  return Math.max(min, Math.min(max, n));
+}
+
+// 安全日期字串驗證
+// - 只允許嚴格的 YYYY-MM-DD 格式（10 碼）
+// - 不符合格式的字串一律回傳 ''，防止 XSS payload 混入快照列表
+function safeDate(val) {
+  const s = String(val ?? '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+// ╔══════════════════════════════════════════════════════════╗
 // ║                  報價狀態指示燈                           ║
 // ╚══════════════════════════════════════════════════════════╝
 
@@ -599,12 +623,19 @@ async function fetchQuotes() {
 
   if (data?.quoteResponse?.result?.length) {
     // 批次 API 成功：逐筆寫入 prices 和 changes
+    // 使用 safeNum 驗證 API 回傳值，防止 CORS proxy 竄改資料造成計算錯誤
     data.quoteResponse.result.forEach(q => {
       const info = TICKER_MAP[q.symbol];
       if (!info) return;
-      prices[info.key] = q.regularMarketPrice ?? 0;
+      // 匯率範圍 1~1000，股價範圍 0.01~100000
+      prices[info.key] = info.cur === 'rate'
+        ? safeNum(q.regularMarketPrice, 1, 1000)
+        : safeNum(q.regularMarketPrice, 0.01, 100000);
       if (info.key !== 'usdtwd') {
-        changes[info.key] = { change: q.regularMarketChange ?? 0, pct: q.regularMarketChangePercent ?? 0 };
+        changes[info.key] = {
+          change: safeNum(q.regularMarketChange ?? 0, -100000, 100000),
+          pct:    safeNum(q.regularMarketChangePercent ?? 0, -100, 100)
+        };
       }
     });
     pricesReady = true;
@@ -624,12 +655,18 @@ async function fetchQuotes() {
   if (hits.length > 0) {
     hits.forEach(({ sym, meta }) => {
       const info = TICKER_MAP[sym];
-      prices[info.key] = meta.regularMarketPrice;
+      // 同樣驗證 v8 API 的回傳值
+      prices[info.key] = info.cur === 'rate'
+        ? safeNum(meta.regularMarketPrice, 1, 1000)
+        : safeNum(meta.regularMarketPrice, 0.01, 100000);
       if (info.key !== 'usdtwd') {
         // v8 API 沒有漲跌資料，用今日收盤 - 昨日收盤計算
-        const prev = meta.chartPreviousClose ?? meta.regularMarketPrice;
-        const chg  = meta.regularMarketPrice - prev;
-        changes[info.key] = { change: chg, pct: prev ? (chg / prev) * 100 : 0 };
+        const prev = safeNum(meta.chartPreviousClose ?? meta.regularMarketPrice, 0.01, 100000);
+        const chg  = prices[info.key] - prev;
+        changes[info.key] = {
+          change: safeNum(chg, -100000, 100000),
+          pct:    prev > 0 ? safeNum((chg / prev) * 100, -100, 100) : 0
+        };
       }
     });
     pricesReady = true;
@@ -669,9 +706,16 @@ function calcNet(h) {
 }
 
 // 從頁面輸入欄位讀取目前持倉數量，回傳物件
+// 使用 safeNum 確保輸入為合法有限數字，防止 NaN/Infinity 進入計算
 function getCurrentHoldings() {
   const h = {};
-  HOLDINGS_KEYS.forEach(k => { h[k] = +document.getElementById('f-' + k).value || 0; });
+  HOLDINGS_KEYS.forEach(k => {
+    const raw = document.getElementById('f-' + k).value;
+    // 股數：0 ~ 1 千萬股；現金/房貸：0 ~ 100 億元；期數：0 ~ 600 期（50 年）
+    if (k === 'months') h[k] = safeNum(raw, 0, 600);
+    else if (k === 'cash' || k === 'mortgage') h[k] = safeNum(raw, 0, 1e10);
+    else h[k] = safeNum(raw, 0, 1e7);  // 股數
+  });
   return h;
 }
 
@@ -1360,18 +1404,20 @@ async function syncFromSheets() {
     const rows = (data.values ?? []).slice(1);  // 跳過第一行標題
     if (!rows.length) return;
     // 將每行原始字串轉換成結構化物件
+    // 使用 safeDate / safeNum 嚴格驗證每個欄位：
+    // 防止 Sheets 中的異常資料（手動輸入錯誤、惡意值）污染前端計算
     snapshots = rows.map(r => ({
-      date:     (r[0] ?? '').slice(0, 10),  // 只取日期部分 YYYY-MM-DD
-      net:      +r[1] || 0,
-      vt:       +r[2] || 0,
-      bnd:      +r[3] || 0,
-      tw0050:   +r[4] || 0,
-      tw006208: +r[5] || 0,
-      auo:      +r[6] || 0,
-      cash:     +r[7] || 0,
-      mortgage: +r[8] || 0,
-      months:   +r[9] || 0,
-    })).filter(s => s.date && s.net);  // 過濾掉空行或無效資料
+      date:     safeDate(r[0]),                     // 嚴格 YYYY-MM-DD 格式驗證
+      net:      safeNum(r[1], -1e10, 1e10),         // 淨資產允許負值（負債大於資產）
+      vt:       safeNum(r[2], 0, 1e7),              // 股數
+      bnd:      safeNum(r[3], 0, 1e7),
+      tw0050:   safeNum(r[4], 0, 1e7),
+      tw006208: safeNum(r[5], 0, 1e7),
+      auo:      safeNum(r[6], 0, 1e7),
+      cash:     safeNum(r[7], 0, 1e10),             // 現金
+      mortgage: safeNum(r[8], 0, 1e10),             // 房貸餘額
+      months:   safeNum(r[9], 0, 600),              // 剩餘期數（最多 50 年）
+    })).filter(s => s.date && isFinite(s.net) && s.net !== 0);  // 過濾日期格式錯誤或零值
     saveSnapshots();
     renderSnapshots();
   } catch(e) {
@@ -1390,13 +1436,17 @@ function saveHoldings() {
 }
 
 // 從 localStorage 讀取上次儲存的持倉數量，填入輸入欄位
+// 套用 safeNum 確保損壞的快取不會填入 NaN 或異常值
 function loadHoldings() {
   try {
     const h = JSON.parse(localStorage.getItem(LS.HOLDINGS));
-    if (!h) return;
+    if (!h || typeof h !== 'object') return;
     HOLDINGS_KEYS.forEach(k => {
       const el = document.getElementById('f-' + k);
-      if (el && h[k] != null) el.value = h[k];
+      if (!el || h[k] == null) return;
+      if (k === 'months')                   el.value = safeNum(h[k], 0, 600);
+      else if (k === 'cash' || k === 'mortgage') el.value = safeNum(h[k], 0, 1e10);
+      else                                   el.value = safeNum(h[k], 0, 1e7);
     });
   } catch(e) {}
 }
@@ -1407,10 +1457,28 @@ function saveSnapshots() {
 }
 
 // 從 localStorage 讀取快照陣列
+// 重新驗證每筆資料：防止損壞的快取或被竄改的 localStorage 造成計算錯誤或 XSS
 function loadSnapshots() {
   try {
     const raw = localStorage.getItem(LS.SNAPS);
-    if (raw) snapshots = JSON.parse(raw);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) { snapshots = []; return; }
+    snapshots = parsed
+      .filter(s => s && typeof s === 'object')
+      .map(s => ({
+        date:     safeDate(s.date),
+        net:      safeNum(s.net, -1e10, 1e10),
+        vt:       safeNum(s.vt, 0, 1e7),
+        bnd:      safeNum(s.bnd, 0, 1e7),
+        tw0050:   safeNum(s.tw0050, 0, 1e7),
+        tw006208: safeNum(s.tw006208, 0, 1e7),
+        auo:      safeNum(s.auo, 0, 1e7),
+        cash:     safeNum(s.cash, 0, 1e10),
+        mortgage: safeNum(s.mortgage, 0, 1e10),
+        months:   safeNum(s.months, 0, 600),
+      }))
+      .filter(s => s.date && isFinite(s.net) && s.net !== 0);
   } catch(e) { snapshots = []; }
 }
 
