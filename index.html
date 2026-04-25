@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-IW/KVpctawpk5zXonJj6m3jZOcR9bzTCMvupqocKGEVzINOSzNZ9EvW5bacBooDZ';
+               script-src 'self' cdn.jsdelivr.net 'sha384-wMI7RRLRbOJ6Huu0Q8E4VBu63nCrtjNz2YQuucJatJzYME5H3eiQRamo88DDUwLZ';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1054,23 +1054,30 @@ function drawFireChart() {
   const startNet     = lastSnap ? lastSnap.net
     : (pricesReady ? calcNet(getCurrentHoldings()) : 0);
 
-  // ── 模擬起始年份 ─────────────────────────────────────────────
-  const simStartYear = Math.max(BASE_YEAR, lastRealYear + 1);
-
   // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
   const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
   const dsAccum  = [];
   const dsWithdr = [];
 
-  // ── 月度模擬迴圈（精確到月，讓不同報酬率顯示不同 FIRE 月份）──
+  // ── 月度模擬迴圈：從快照的「下個月」開始，避免頭尾兩點間出現空白平段 ──
   const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 月複利率
-  let simVal = startNet, fireYear = null, fireX = null;
 
+  // 決定迴圈起始年月（快照存在時從快照下個月開始，否則從 BASE_YEAR/01 開始）
+  let loopYr, loopMo;
   if (lastSnap) {
+    const p = String(lastSnap.date).replace(/-/g, '/').split('/');
+    loopYr = +p[0];
+    loopMo = (p[1] ? +p[1] : 1) + 1;      // 快照月 + 1
+    if (loopMo > 12) { loopMo = 1; loopYr++; }
     dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
+  } else {
+    loopYr = Math.max(BASE_YEAR, lastRealYear + 1);
+    loopMo = 1;
   }
-  outer: for (let yr = simStartYear; yr <= BASE_YEAR + YEARS; yr++) {
-    for (let mo = 1; mo <= 12; mo++) {
+
+  let simVal = startNet, fireYear = null, fireX = null;
+  outer: for (let yr = loopYr; yr <= BASE_YEAR + YEARS; yr++) {
+    for (let mo = (yr === loopYr ? loopMo : 1); mo <= 12; mo++) {
       if (fireYear === null) {
         simVal = simVal * (1 + mRetRate) + monthly;
       } else {
