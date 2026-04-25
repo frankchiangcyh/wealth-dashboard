@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-z5ADFOk00PWqQFr5V+d5tHk7p5Dw+SSybZdaaBYfrf1ZTqip5UeEqptDEkWGanFv';
+               script-src 'self' cdn.jsdelivr.net 'sha384-07SZVBRL0lfxbdORvb21PUdUtxRNw8Ma3G2YlLHz62C2f40HfhBQNL+01upp7CQd';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1048,36 +1048,39 @@ function drawFireChart() {
   const startNet     = lastSnap ? lastSnap.net
     : (pricesReady ? calcNet(getCurrentHoldings()) : 0);
 
-  // ── 模擬年份 ─────────────────────────────────────────────────
+  // ── 模擬起始年份 ─────────────────────────────────────────────
   const simStartYear = Math.max(BASE_YEAR, lastRealYear + 1);
-  const simYears = [];
-  for (let yr = simStartYear; yr <= BASE_YEAR + YEARS; yr++) simYears.push(yr);
 
   // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
   const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
   const dsAccum  = [];
   const dsWithdr = [];
 
-  // ── 銜接點 + 模擬迴圈 ──────────────────────────────────────
-  let simVal = startNet, fireYear = null;
+  // ── 月度模擬迴圈（精確到月，讓不同報酬率顯示不同 FIRE 月份）──
+  const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 月複利率
+  let simVal = startNet, fireYear = null, fireX = null;
 
   if (lastSnap) {
     dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
-    simVal = simVal * (1 + retRate) + monthly * 12;     // 預推進一年供第一模擬年使用
   }
-  for (const yr of simYears) {
-    if (fireYear === null && simVal >= target) {
-      // 達標年份：同時是藍線最後一點 + 綠線第一點，確保無縫銜接
-      fireYear = yr;
-      dsAccum.push({ x: yr, y: Math.round(simVal) });
-      dsWithdr.push({ x: yr, y: Math.round(simVal) });
-      simVal = simVal * (1 + retRate) - simVal * wdrRate;
-    } else if (fireYear === null) {
-      dsAccum.push({ x: yr, y: Math.round(simVal) });
-      simVal = simVal * (1 + retRate) + monthly * 12;
-    } else {
-      dsWithdr.push({ x: yr, y: Math.max(0, Math.round(simVal)) });
-      simVal = simVal * (1 + retRate) - simVal * wdrRate;
+  outer: for (let yr = simStartYear; yr <= BASE_YEAR + YEARS; yr++) {
+    for (let mo = 1; mo <= 12; mo++) {
+      if (fireYear === null) {
+        simVal = simVal * (1 + mRetRate) + monthly;
+      } else {
+        simVal = simVal * (1 + mRetRate) - simVal * wdrRate / 12;
+      }
+      const x = fracYear(`${yr}/${String(mo).padStart(2, '0')}/01`);
+      if (fireYear === null && simVal >= target) {
+        // 達標月份：同時加入藍線末端 + 綠線起點，確保無縫銜接
+        fireYear = yr; fireX = x;
+        dsAccum.push({ x, y: Math.round(simVal) });
+        dsWithdr.push({ x, y: Math.round(simVal) });
+      } else if (fireYear === null) {
+        dsAccum.push({ x, y: Math.round(simVal) });
+      } else {
+        dsWithdr.push({ x, y: Math.max(0, Math.round(simVal)) });
+      }
     }
   }
 
@@ -1093,24 +1096,32 @@ function drawFireChart() {
     },
   };
 
-  // 財務自由達標點（綠色圓點；xValue 用數值年份配合線性軸）
-  if (fireYear) {
-    const fp = dsAccum.find(p => p.x === fireYear) ?? dsWithdr[0];
+  // 財務自由達標點（綠色圓點；xValue 用小數年份配合線性軸）
+  if (fireX !== null) {
+    const fp = dsWithdr[0] ?? dsAccum[dsAccum.length - 1];
+    // 標籤顯示精確到月：e.g. "★ 財務自由 2033/05"
+    const fireYrInt = Math.floor(fireX);
+    const fireMo    = Math.min(12, Math.max(1, Math.round((fireX - fireYrInt) * 12) + 1));
+    const fireLabel = `★ FIRE ${fireYrInt}/${String(fireMo).padStart(2, '0')}`;
     annotations.firePoint = {
-      type:'point', xValue:fireYear, yValue:fp?.y ?? target,
+      type:'point', xValue:fireX, yValue:fp?.y ?? target,
       radius:6, backgroundColor:'#3fb950', borderColor:'#3fb950', borderWidth:2,
-      label:{ content:'★ 財務自由', display:true, position:'top', color:'#3fb950', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
+      label:{ content:fireLabel, display:true, position:'top', color:'#3fb950', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
     };
   }
 
-  // 房貸結清點（黃色圓點）
+  // 房貸結清點（黃色圓點）——找最近的月度資料點
   const h = getCurrentHoldings();
   if (h.months > 0) {
     const mortYr = lastRealYear + Math.ceil(h.months / 12);
     if (mortYr <= BASE_YEAR + YEARS) {
-      const mp = dsAccum.find(p => p.x === mortYr) ?? dsWithdr.find(p => p.x === mortYr);
+      const mortX  = fracYear(`${mortYr}/01/01`);
+      const allPts = [...dsAccum, ...dsWithdr];
+      const mp     = allPts.length
+        ? allPts.reduce((best, p) => Math.abs(p.x - mortX) < Math.abs(best.x - mortX) ? p : best)
+        : null;
       if (mp) annotations.mortPoint = {
-        type:'point', xValue:mortYr, yValue:mp.y,
+        type:'point', xValue:mortX, yValue:mp.y,
         radius:5, backgroundColor:'#d29922', borderColor:'#d29922', borderWidth:2,
         label:{ content:'房貸結清', display:true, position:'top', color:'#d29922', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
       };
