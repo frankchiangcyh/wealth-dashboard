@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-hIF5A1hg3ixJEc0/fx2/s8vqZWAevasOx72Z3WVvQbcPPkVPm4vhnIpaL0932FPV';
+               script-src 'self' cdn.jsdelivr.net 'sha384-aRjoo9PERPztsUR0KHnxl9WEK9o4dijIWAjtQcnnSQ2ERi40o4uKWAjthE2MJTaz';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1059,7 +1059,7 @@ function drawFireChart() {
   const simYears = [];
   for (let yr = simStartYear; yr <= BASE_YEAR + YEARS; yr++) simYears.push(yr);
 
-  const labels = [...snapLbls, ...simYears.map(String)];
+  const labels = [...snapLbls, ...simYears.map(yr => yr + '/01')];
 
   // ── 三條線的資料陣列 ─────────────────────────────────────────
   const dsReal   = [...sortedSnaps.map(s => Math.round(s.net)), ...simYears.map(() => null)];
@@ -1092,7 +1092,7 @@ function drawFireChart() {
 
   // ── 圖表標注設定 ────────────────────────────────────────────
   const RETIREMENT_YEAR = 2032;  // 預計退休年份（可依個人計畫修改）
-  const retLbl = String(RETIREMENT_YEAR);  // labels 陣列中的字串形式
+  const retLbl = RETIREMENT_YEAR + '/01';  // labels 陣列中的字串形式
 
   // 目標門檻水平虛線
   const annotations = {
@@ -1105,9 +1105,9 @@ function drawFireChart() {
 
   // 財務自由達標點（綠色圓點）
   if (fireYear) {
-    const fireIdx = labels.indexOf(String(fireYear));
+    const fireIdx = labels.indexOf(fireYear + '/01');
     annotations.firePoint = {
-      type:'point', xValue:String(fireYear), yValue:dsAccum[fireIdx] ?? target,
+      type:'point', xValue:fireYear + '/01', yValue:dsAccum[fireIdx] ?? target,
       radius:6, backgroundColor:'#3fb950', borderColor:'#3fb950', borderWidth:2,
       label:{ content:'★ 財務自由', display:true, position:'top', color:'#3fb950', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
     };
@@ -1118,10 +1118,10 @@ function drawFireChart() {
   if (h.months > 0) {
     const mortYr  = lastRealYear + Math.ceil(h.months / 12);
     if (mortYr <= BASE_YEAR + YEARS) {
-      const mortIdx = labels.indexOf(String(mortYr));
+      const mortIdx = labels.indexOf(mortYr + '/01');
       const mortVal = mortIdx >= 0 ? (dsAccum[mortIdx] ?? dsWithdr[mortIdx]) : null;
       if (mortVal) annotations.mortPoint = {
-        type:'point', xValue:String(mortYr), yValue:mortVal,
+        type:'point', xValue:mortYr + '/01', yValue:mortVal,
         radius:5, backgroundColor:'#d29922', borderColor:'#d29922', borderWidth:2,
         label:{ content:'房貸結清', display:true, position:'top', color:'#d29922', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
       };
@@ -1155,7 +1155,7 @@ function drawFireChart() {
         annotation:{ annotations }
       },
       scales:{
-        x:{ ticks:{ color:'#8b949e', maxTicksLimit:12, maxRotation:45, minRotation:0, font:{size:11} }, grid:{ color:'#21262d' } },
+        x:{ ticks:{ color:'#8b949e', autoSkip:false, maxRotation:45, minRotation:0, font:{size:11} }, grid:{ color:'#21262d' } },
         y:(()=>{
           // Y 軸刻度演算法：以目標資產 × 1.3 為基準，計算美觀的步距
           // 目的：避免步距過大（看不出變化）或過小（刻度太密）
