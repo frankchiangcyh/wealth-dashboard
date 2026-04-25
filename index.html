@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-wMI7RRLRbOJ6Huu0Q8E4VBu63nCrtjNz2YQuucJatJzYME5H3eiQRamo88DDUwLZ';
+               script-src 'self' cdn.jsdelivr.net 'sha384-K9xmHrLpgSRGlGP1FSCh9btyKS7vGtJa3MMlSNkXG/kS3dmk+8UYebCfgbzYZC2f';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1040,7 +1040,21 @@ function drawFireChart() {
   const BASE_YEAR = new Date().getFullYear();
   const YEARS     = 40;  // 模擬未來 40 年
 
-  // ── 日期字串 → 小數年份（讓線性軸呈現正確時間比例）──────
+  // ── 日期字串 → 小數年份（供 Chart.js linear 軸使用）───────
+  // 【為什麼需要這個？】
+  //   Chart.js 的 type:'category' 軸會把每個資料點等距排列，
+  //   導致「相差 20 天」和「相差 1 年」在視覺上佔相同寬度，
+  //   完全失去時間比例感。改用 type:'linear' + 小數年份，
+  //   就能讓 2026.3 ~ 2027.3 恰好佔一年的像素寬度。
+  //
+  // 【換算公式】
+  //   小數年份 = 整數年 + (已過月份對應天數 + 當月日數) / 365.25
+  //   30.44 = 365.25 / 12（每月平均天數）
+  //   例：2026/04/24 → 2026 + ((4-1)*30.44 + 24) / 365.25 ≈ 2026.31
+  //
+  // 【容錯設計】
+  //   - 支援 YYYY-MM-DD 或 YYYY/MM/DD 兩種格式（replace 統一為 /）
+  //   - 缺少月份時預設 1 月；缺少日期時預設 15 日（月中）
   function fracYear(dateStr) {
     const p = String(dateStr).replace(/-/g,'/').split('/');
     const y = +p[0], m = p[1] ? +p[1] : 1, d = p[2] ? +p[2] : 15;
@@ -1059,39 +1073,82 @@ function drawFireChart() {
   const dsAccum  = [];
   const dsWithdr = [];
 
-  // ── 月度模擬迴圈：從快照的「下個月」開始，避免頭尾兩點間出現空白平段 ──
-  const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 月複利率
+  // ── 月度模擬迴圈：從快照的「下個月」開始，確保曲線平滑連續 ──
+  //
+  // 【為什麼要從「下個月」而非「年初」開始？】
+  //   舊版從 simStartYear（lastRealYear + 1）的 1 月才開始模擬，
+  //   若快照是 2026/05，則迴圈從 2027/01 才產生第一個月度點。
+  //   這導致兩個問題：
+  //     1. 中間 8 個月（2026/06 ~ 2026/12）完全沒有資料點
+  //        → Chart.js 拉一條平直插值線，視覺上呈現「平段」
+  //     2. 2027/01 的 simVal 只被推進了「1 個月」複利，
+  //        不是正確的「8 個月」累積，數值偏低
+  //   修正：從快照日期的下一個月開始逐月計算，每月都有一個資料點，
+  //   藍線才能呈現正確的指數複利 + 定期定額平滑上升曲線。
+  //
+  // 【月複利率換算公式】
+  //   年化報酬率 r → 月複利率 = (1 + r)^(1/12) - 1
+  //   例：年化 7% → 月複利率 ≈ 0.565%（而非 7%/12 = 0.583%，兩者差距在長期複利中有意義）
+  const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 年化報酬率轉月複利率
 
-  // 決定迴圈起始年月（快照存在時從快照下個月開始，否則從 BASE_YEAR/01 開始）
+  // 決定迴圈起始年月
+  // ・有快照：從快照當月的「下個月」開始（確保銜接點不重複計算）
+  // ・無快照：從 BASE_YEAR 的 1 月開始（全部都是模擬資料）
   let loopYr, loopMo;
   if (lastSnap) {
     const p = String(lastSnap.date).replace(/-/g, '/').split('/');
     loopYr = +p[0];
-    loopMo = (p[1] ? +p[1] : 1) + 1;      // 快照月 + 1
+    loopMo = (p[1] ? +p[1] : 1) + 1;      // 快照月 + 1（若快照是 12 月則進位到明年 1 月）
     if (loopMo > 12) { loopMo = 1; loopYr++; }
+    // 橘線（dsReal）末端即為藍線（dsAccum）起點——同一個 x/y 確保兩線無縫接合
     dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
   } else {
+    // 沒有任何歷史快照，從今年 1 月起全部模擬
     loopYr = Math.max(BASE_YEAR, lastRealYear + 1);
     loopMo = 1;
   }
 
+  // simVal：當前模擬資產值，初始值為最新快照淨資產（或 0）
+  // fireYear：FIRE 發生年份（null = 尚未達標）
+  // fireX：FIRE 發生月份的小數年份座標（用於 annotation 精確定位）
   let simVal = startNet, fireYear = null, fireX = null;
+
+  // outer: 標籤讓內層可用 break outer 提前結束雙層迴圈（本版未使用，但保留以備未來擴充）
   outer: for (let yr = loopYr; yr <= BASE_YEAR + YEARS; yr++) {
+    // 第一年從快照的下一個月開始，後續年份從 1 月開始
     for (let mo = (yr === loopYr ? loopMo : 1); mo <= 12; mo++) {
+
+      // ── 每月資產更新 ─────────────────────────────────────────
       if (fireYear === null) {
+        // 【累積期】複利增值 + 每月定期定額投入
+        // 公式：新值 = 舊值 × (1 + 月複利率) + 每月投入金額
+        // 注意：投入金額在月末計算（end-of-month），模擬定期定額在月底扣款
         simVal = simVal * (1 + mRetRate) + monthly;
       } else {
+        // 【提領期】複利增值 - 每月提領金額
+        // 年提領率換算為月提領率：wdrRate / 12
+        // 例：4% 年提領率 → 每月從當期資產提領 4%/12 ≈ 0.333%
+        // 注意：每月提領金額會隨資產增減而浮動（非固定金額）
         simVal = simVal * (1 + mRetRate) - simVal * wdrRate / 12;
       }
+
+      // 本月的 x 座標（小數年份，用於 Chart.js linear 軸定位）
       const x = fracYear(`${yr}/${String(mo).padStart(2, '0')}/01`);
+
       if (fireYear === null && simVal >= target) {
-        // 達標月份：同時加入藍線末端 + 綠線起點，確保無縫銜接
-        fireYear = yr; fireX = x;
-        dsAccum.push({ x, y: Math.round(simVal) });
-        dsWithdr.push({ x, y: Math.round(simVal) });
+        // ── 本月達到財務自由目標（FIRE 月份）───────────────────
+        // 同時將此點加入藍線末端（dsAccum）和綠線起點（dsWithdr），
+        // 讓兩條線在 FIRE 點完美銜接，沒有視覺跳斷
+        fireYear = yr;
+        fireX    = x;
+        dsAccum.push({ x, y: Math.round(simVal) });   // 藍線在此結束
+        dsWithdr.push({ x, y: Math.round(simVal) });  // 綠線從此開始
       } else if (fireYear === null) {
+        // ── 累積期：每月加一個點到藍線 ──────────────────────────
         dsAccum.push({ x, y: Math.round(simVal) });
       } else {
+        // ── 提領期：每月加一個點到綠虛線 ────────────────────────
+        // Math.max(0, ...) 防止資產耗盡後顯示負值（破產保護）
         dsWithdr.push({ x, y: Math.max(0, Math.round(simVal)) });
       }
     }
@@ -1180,8 +1237,18 @@ function drawFireChart() {
       },
       scales:{
         x:{
-          type:'linear',
-          // 讓每個 tick 對齊到每月 1 日（calendar-aligned monthly ticks）
+          type:'linear',   // 數值型軸，讓 fracYear 小數年份呈現正確時間比例
+
+          // ── 月曆對齊刻度（afterBuildTicks）─────────────────────────
+          // 【為什麼需要自訂 afterBuildTicks？】
+          //   Chart.js 的 linear 軸預設會在「等間距的數值」產生刻度，
+          //   例如 2026.0, 2026.5, 2027.0... 這些不是自然的月份邊界，
+          //   標籤顯示會出現 "2026/07" 等奇怪的非整月刻度。
+          //   透過 afterBuildTicks，我們強制讓每個刻度都對齊到「每月 1 日」
+          //   的 fracYear 值，讓 X 軸標籤永遠顯示整月（2026/01、2026/02...）。
+          // 【0.05 寬鬆邊界的作用】
+          //   axis.min/max 是根據資料範圍計算的，可能因浮點誤差導致
+          //   邊界月份被排除。+/- 0.05 ≈ 18 天的容忍值確保邊界月份都能顯示。
           afterBuildTicks(axis) {
             if (axis.min == null || axis.max == null) return;
             const tks = [];
@@ -1194,7 +1261,10 @@ function drawFireChart() {
             axis.ticks = tks;
           },
           ticks:{
-            color:'#8b949e', font:{size:11}, maxRotation:90, minRotation:45,
+            color:'#8b949e', font:{size:11},
+            maxRotation:90, minRotation:45,   // 旋轉 45°~90°，避免月份標籤互相重疊
+            // 將 fracYear 小數值反轉回「YYYY/MM」顯示格式
+            // 公式：月份 = round((小數部分 × 12)) + 1，再 clamp 到 1~12
             callback: v => {
               const yr = Math.floor(v);
               const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
@@ -1204,21 +1274,30 @@ function drawFireChart() {
           grid:{ color:'#21262d' }
         },
         y:(()=>{
-          // Y 軸刻度演算法：以目標資產 × 1.3 為基準，計算美觀的步距
-          // 目的：避免步距過大（看不出變化）或過小（刻度太密）
+          // ── Y 軸刻度美觀演算法 ────────────────────────────────────
+          // 【目標】產生約 10 個刻度，且步距是「人類易讀的整數」：
+          //   1M, 2M, 2.5M, 5M, 10M... 而不是 3.7M, 7.4M 這種難讀的數字
+          //
+          // 【演算法步驟】
+          //   1. scaleBase = 目標資產 × 1.3（留 30% 上方空間，避免頂到邊緣）
+          //   2. raw = scaleBase / 10（預期產生 10 個刻度的原始步距）
+          //   3. mag = 10^floor(log10(raw))（取 raw 的數量級，e.g. 3M → 10^6 = 1M）
+          //   4. norm = raw / mag（標準化到 1~10 範圍）
+          //   5. step = 從 {1, 2, 2.5, 5, 10} 中選最接近 norm 的值 × mag
+          //   例：目標 30M → scaleBase=39M → raw=3.9M → mag=1M → norm=3.9
+          //      → 選 5 → step=5M → yMax=40M → 刻度：0,5M,10M,...,40M
           const scaleBase = target * 1.3;
-          const raw  = scaleBase / 10;  // 預計約 10 個刻度
-          const mag  = Math.pow(10, Math.floor(Math.log10(raw || 1)));  // 數量級
+          const raw  = scaleBase / 10;
+          const mag  = Math.pow(10, Math.floor(Math.log10(raw || 1)));
           const norm = raw / mag;
-          // 選最接近的美觀步距：1、2、2.5、5、10
           const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
-          const yMax = Math.ceil(scaleBase / step) * step;
+          const yMax = Math.ceil(scaleBase / step) * step;  // 無條件進位到步距的整數倍
           return {
             min: 0, max: yMax,
             ticks:{
               stepSize: step,
               color:'#8b949e', font:{size:12},
-              // 大於 100 萬顯示 M，否則顯示萬
+              // 大於 100 萬（1e6）顯示 M 單位；否則顯示萬
               callback: v => v >= 1e6 ? (v/1e6).toFixed(0)+'M' : (v/1e4).toFixed(0)+'萬'
             },
             grid:{ color:'#21262d' }
@@ -1228,73 +1307,132 @@ function drawFireChart() {
     }
   };
 
-  // ── 退休年份垂直標線（Canvas 直接繪製）─────────────────────
+  // ── 退休目標年份垂直標線 Plugin（純 Canvas 手繪，非 annotation）──
+  //
+  // 【為什麼不用 chartjs-plugin-annotation 的 line 類型？】
+  //   annotation 的垂直線在 linear x 軸上需要 xMin/xMax 為數值，
+  //   但標籤框的圓角背景、半透明效果難以透過 annotation API 精細控制。
+  //   直接用 Canvas API 手繪，可完全掌控每個視覺細節。
+  //
+  // 【ctx.save() / ctx.restore() 的必要性】
+  //   Chart.js 在呼叫 afterDraw 後會繼續使用同一個 ctx，
+  //   如果不 save/restore，我們設定的 strokeStyle、lineDash 等狀態
+  //   會污染後續所有繪製操作（如 annotation、tooltip）。
   const retirementLinePlugin = {
     id: 'retireLine',
     afterDraw(chart) {
       if (!chart.scales.x) return;
+
+      // getPixelForValue：將軸上的數值（小數年份）轉換為 canvas 上的 x 像素座標
       const px = chart.scales.x.getPixelForValue(RETIREMENT_YEAR);
+      // 若退休年在當前可見範圍外（例如捲動到最右邊時），不需繪製
       if (px < chart.chartArea.left || px > chart.chartArea.right) return;
 
       const { ctx, chartArea: { top, bottom } } = chart;
       const x = px;
-      ctx.save();
+      ctx.save();  // 保存 canvas 狀態，確保繪製後能完整還原
 
-      // 繪製粉色虛線
-      ctx.strokeStyle = '#f778ba';
+      // ── 繪製粉色虛線（從圖表頂端到底端）────────────────────────
+      ctx.strokeStyle = '#f778ba';       // 粉紅色（FIRE 主題色）
       ctx.lineWidth   = 2.5;
-      ctx.setLineDash([6, 4]);
-      ctx.globalAlpha = 0.85;
+      ctx.setLineDash([6, 4]);           // 虛線樣式：6px 實線、4px 間隔
+      ctx.globalAlpha = 0.85;            // 略微透明，不搶走資料線的視覺重心
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
-      ctx.setLineDash([]);
+      ctx.setLineDash([]);               // 清除虛線設定（避免影響後續繪製）
       ctx.globalAlpha = 1;
 
-      // 繪製標籤背景框
-      const label = '\uD83C\uDF82 退休 2032（50歲）';
+      // ── 繪製標籤背景框 ───────────────────────────────────────────
+      // 先量測文字寬度，再根據文字大小動態計算外框尺寸
+      const label = '\uD83C\uDF82 退休 2032（50歲）';   // 🎂 Unicode emoji
       ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
-      const tw = ctx.measureText(label).width;
-      const pad = 8, bh = 22;
-      const bx = x - tw / 2 - pad;
-      const by = top + 10;
-      ctx.fillStyle = 'rgba(13,17,23,0.92)';
+      const tw  = ctx.measureText(label).width;  // 文字實際像素寬度
+      const pad = 8, bh = 22;                    // 水平內距 8px、框高 22px
+      const bx  = x - tw / 2 - pad;             // 框左上角 x（以虛線為中心水平置中）
+      const by  = top + 10;                      // 框左上角 y（距圖表頂端 10px）
+      ctx.fillStyle = 'rgba(13,17,23,0.92)';     // 深色半透明背景
       ctx.beginPath();
+      // roundRect 是較新的 API，舊版瀏覽器不支援，fallback 使用 rect
       ctx.roundRect ? ctx.roundRect(bx, by, tw + pad * 2, bh, 4)
                     : ctx.rect(bx, by, tw + pad * 2, bh);
       ctx.fill();
-      ctx.strokeStyle = '#f778ba';
+      ctx.strokeStyle = '#f778ba';   // 外框與虛線同色
       ctx.lineWidth   = 1.2;
       ctx.stroke();
 
-      // 繪製標籤文字
+      // ── 繪製標籤文字 ─────────────────────────────────────────────
       ctx.fillStyle    = '#f778ba';
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.textAlign    = 'center';        // 以 x 為中心水平置中
+      ctx.textBaseline = 'middle';        // 垂直置中於框高
       ctx.fillText(label, x, by + bh / 2);
-      ctx.restore();
+      ctx.restore();  // 還原所有 canvas 狀態
     }
   };
 
-  // ── Canvas 尺寸：退休年落在可視寬度 2/3 處，超出部分可橫向捲動 ──
+  // ── Canvas 尺寸動態計算：退休年固定落在可視寬度 2/3 處 ──────
+  //
+  // 【設計目標】
+  //   - 退休目標年（RETIREMENT_YEAR）永遠出現在畫面左側約 2/3 的位置
+  //   - 後續的提領期延伸到畫面右方，需橫向捲動才能看到
+  //   - 這樣使用者打開頁面就能立刻看到「距退休還有多遠」的完整脈絡
+  //
+  // 【計算流程】
+  //   1. preRetSpan = 最早資料點 → 退休年 的年數跨度
+  //   2. pxPerYear  = containerW * (2/3) / preRetSpan
+  //      → 讓 preRetSpan 年恰好佔容器寬度的 2/3
+  //   3. totalWidth = pxPerYear × totalSpan
+  //      → Canvas 總寬 = 每年像素 × 全部年數
+  //   最少保證每年 120px（≈ 10px/月），確保月份標籤不會重疊
   const canvas     = document.getElementById('fireChart');
-  const container  = canvas.parentElement;
-  const savedScroll   = container.scrollLeft;          // 保留捲動位置
+  const container  = canvas.parentElement;           // .chart-container（捲動層）
+  const savedScroll   = container.scrollLeft;        // 重繪前先保留捲動位置，重繪後還原
   const containerW    = container.clientWidth  || 800;
   const containerH    = container.clientHeight || 560;
-  const firstX        = dsReal.length ? dsReal[0].x : simStartYear;  // 最早資料點
-  const preRetSpan    = Math.max(RETIREMENT_YEAR - firstX, 1);        // 首點到退休年的跨度
-  const totalSpan     = Math.max(BASE_YEAR + YEARS - firstX, preRetSpan + 1);
-  // 每年最少 120px（10px/月 × 12 個月），確保月份標籤有足夠寬度
-  const pxPerYear     = Math.max(Math.ceil(containerW * 2 / 3 / preRetSpan), 120);
-  const totalWidth    = Math.max(Math.ceil(pxPerYear * totalSpan), containerW);
+
+  // 最早資料點（橘線第一個快照，或無快照時從今年開始）
+  const firstX     = dsReal.length ? dsReal[0].x : (loopYr ?? BASE_YEAR);
+  // 最早點到退休年的年數（至少 1 年，避免除以零）
+  const preRetSpan = Math.max(RETIREMENT_YEAR - firstX, 1);
+  // 最早點到模擬結束（BASE_YEAR + 40年）的年數
+  const totalSpan  = Math.max(BASE_YEAR + YEARS - firstX, preRetSpan + 1);
+
+  // 每年對應的像素寬度
+  // ・理想值：讓退休年落在容器 2/3 處
+  // ・下限 120px：確保每個月份標籤（10px × 12 個月）有足夠寬度
+  const pxPerYear  = Math.max(Math.ceil(containerW * 2 / 3 / preRetSpan), 120);
+
+  // Canvas 總寬（至少和容器同寬，避免圖表縮小到小於容器）
+  const totalWidth = Math.max(Math.ceil(pxPerYear * totalSpan), containerW);
+
+  // 直接設定 canvas 的實際像素尺寸與 CSS 顯示尺寸（兩者必須一致，否則圖形模糊）
+  // 注意：responsive:false 時 Chart.js 不自動調整 canvas 尺寸，需手動設定
   canvas.width        = totalWidth;
   canvas.height       = containerH;
   canvas.style.width  = totalWidth  + 'px';
   canvas.style.height = containerH  + 'px';
 
-  // ── 凍結 Y 軸 plugin：afterDraw 把 Y 軸區域複製到 overlay canvas ──
+  // ── 凍結 Y 軸 Plugin（橫向捲動時 Y 軸不隨圖消失）─────────────
+  //
+  // 【問題根源】
+  //   圖表 canvas 寬度可能超過 2000px，放在 .chart-container（overflow-x:auto）裡，
+  //   捲動時整個 canvas 往左移動，Y 軸也跟著消失到畫面外。
+  //
+  // 【解決方案：雙 canvas 疊加法】
+  //   1. #yAxisOverlay  ─ 絕對定位在 .chart-outer 的左上角（不在捲動容器內）
+  //   2. #fireChart     ─ 在 .chart-container 內，可正常橫向捲動
+  //   每次圖表重繪後，此 plugin 的 afterDraw() 把主 canvas 左側
+  //   的 Y 軸區域（寬度 = chartArea.left）複製貼到 overlay canvas，
+  //   overlay 因為在捲動層之外，永遠固定在左側不動。
+  //
+  // 【為什麼用 drawImage 而非獨立 Chart.js 實例？】
+  //   獨立實例需要同步兩個圖表的 Y 軸範圍，實作複雜且有閃爍風險。
+  //   drawImage 直接複製像素，零延遲、零閃爍，且永遠與主圖同步。
+  //
+  // 【pointer-events:none 的作用】
+  //   overlay canvas 只做視覺呈現，不攔截滑鼠事件，
+  //   讓 tooltip 等互動功能穿透到底層主 canvas 正常運作。
   const stickyYAxisPlugin = {
     id: 'stickyYAxis',
     afterDraw(chart) {
@@ -1303,20 +1441,23 @@ function drawFireChart() {
       const { chartArea, scales } = chart;
       if (!chartArea || !scales.y) return;
 
-      // Y 軸寬度 = chartArea.left（含刻度 + 標籤 + padding）
+      // chartArea.left = Y 軸總寬（刻度線 + 數字標籤 + 左側 padding）
       const axisW = Math.ceil(chartArea.left);
       const h     = chart.height;
 
+      // 更新 overlay canvas 的實際像素尺寸（與主 canvas 高度一致）
+      // 注意：每次都重設 width/height 是必要的，因為 retirementLinePlugin 可能改變高度
       overlay.width        = axisW;
       overlay.height       = h;
       overlay.style.width  = axisW  + 'px';
       overlay.style.height = h + 'px';
 
       const octx = overlay.getContext('2d');
-      // 先填底色避免透明
-      octx.fillStyle = '#0d1117';
+      // Step 1：先用背景色填滿，蓋住任何舊的殘影（尤其是主 canvas 捲動後的殘留）
+      octx.fillStyle = '#0d1117';   // 與頁面背景色相同
       octx.fillRect(0, 0, axisW, h);
-      // 從主 canvas 複製 Y 軸區域
+      // Step 2：從主 canvas 左側 (0,0)~(axisW,h) 複製到 overlay 的 (0,0)~(axisW,h)
+      // drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh) — 來源裁切 → 目標繪製
       octx.drawImage(chart.canvas, 0, 0, axisW, h, 0, 0, axisW, h);
     }
   };
@@ -1424,11 +1565,27 @@ function confirmSecret() {
 
 // ── OAuth 授權啟動 ───────────────────────────────────────────
 
-// 啟動 Google OAuth 授權流程
-// 1. 檢查設定是否完整
-// 2. 若無密鑰則彈窗請使用者輸入
-// 3. 產生 PKCE verifier / challenge
-// 4. 跳轉到 Google 授權頁面
+// ── 啟動 Google OAuth 2.0 + PKCE 授權流程 ───────────────────
+// 【什麼是 PKCE？（Proof Key for Code Exchange）】
+//   傳統 OAuth 需要 client_secret 才能換取 token，但 SPA（單頁應用）
+//   無法安全儲存 secret（原始碼完全公開）。PKCE 解決了這個問題：
+//   1. 前端產生隨機 code_verifier（32 bytes）
+//   2. 對 verifier 做 SHA-256 → code_challenge（雜湊值）
+//   3. 授權請求附帶 code_challenge（雜湊後的值）
+//   4. 換 token 時附帶原始 code_verifier（Google 自行驗證雜湊）
+//   即使攻擊者攔截到 code，沒有 verifier 也無法換取 token。
+//
+// 【本 app 的額外安全層：client_secret 由使用者手動輸入並存於 localStorage】
+//   雖然 PKCE 不需要 client_secret，但 Google 的 Web 應用類型仍要求附帶。
+//   為避免洩露於 GitHub 原始碼，secret 僅在使用者首次連結時輸入並存在瀏覽器本地。
+//
+// 流程：
+//   1. 檢查 CLIENT_ID / SHEET_ID 已填入（非預設佔位字串）
+//   2. 若無 client_secret → 彈出輸入框請使用者輸入（輸入後繼續此流程）
+//   3. 產生 code_verifier（隨機）→ SHA-256 → code_challenge
+//   4. 跳轉至 Google 授權頁（帶上 challenge）
+//   5. 使用者同意後，Google 跳回本頁並帶 ?code=...
+//   6. handleOAuthCallback() 用 code + verifier 向 Google 換取 token
 async function startOAuth() {
   if (!isConfigured()) {
     showAlert('⚠ 請先在 index.html 頂部填入 CLIENT_ID 和 SHEET_ID 後再連結 Google。');
@@ -1512,15 +1669,27 @@ async function handleOAuthCallback(code) {
 
 // ── Token 自動刷新 ───────────────────────────────────────────
 
-// 取得有效的 access_token（過期時自動用 refresh_token 換新的）
+// ── 取得有效的 access_token（自動刷新機制）──────────────────
+// 【Google access_token 的生命週期】
+//   access_token 有效期約 1 小時（expires_in = 3600 秒）
+//   refresh_token 長期有效（使用者撤銷授權或長期未使用時才會失效）
+//
+// 【自動刷新流程】
+//   1. 讀取 sessionStorage 的 access_token 與 expires_at
+//   2. 若距到期 > 1 分鐘 → 直接回傳（有效）
+//   3. 若快到期或已到期 → 用 refresh_token 向 Google 換新的 access_token
+//   4. 若 refresh_token 也不存在或換新失敗 → 清除 token，提示重新登入
+//
+// 【1 分鐘提前刷新的原因】
+//   避免 token 在 API 請求途中才剛到期，造成請求失敗後才發現需要刷新的問題。
 async function getAccessToken() {
   const t = loadTokens();
   if (!t) return null;
 
-  // Token 還有 1 分鐘以上效期，直接回傳
+  // Token 還有超過 1 分鐘效期，直接回傳（不需刷新）
   if (Date.now() < t.expires_at - 60000) return t.access_token;
 
-  // Token 快到期，嘗試用 refresh_token 換新的
+  // Token 即將到期（< 1 分鐘）或已過期，嘗試用 refresh_token 換新的
   if (!t.refresh_token) { clearTokens(); updateGoogleStatus(); return null; }
   try {
     const res = await fetch('https://oauth2.googleapis.com/token', {
@@ -1879,7 +2048,12 @@ updateClock();
   }
   updateGoogleStatus();
 
-  // ── 事件綁定放在最前面，確保任何後續操作拋出例外時按鈕仍有效 ────────────
+  // ── 事件綁定：必須在所有可能拋出例外的操作「之前」完成 ──────
+  // 【為什麼順序很重要？】
+  //   init() 是 async 函式，若 refreshAll() 或 drawFireChart() 拋出例外，
+  //   例外之後的程式碼都不會執行。若事件綁定排在後面，
+  //   任何一個錯誤都會導致所有按鈕失效——頁面看起來正常，但完全沒有反應。
+  //   因此事件綁定必須放在最前面，即使後續出錯，按鈕依然可用。
   document.getElementById('btn-google')     .addEventListener('click', handleGoogleBtn);
   document.getElementById('secret-cancel')  .addEventListener('click', closeSecretModal);
   document.getElementById('secret-confirm') .addEventListener('click', confirmSecret);
