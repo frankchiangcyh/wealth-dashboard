@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-aRjoo9PERPztsUR0KHnxl9WEK9o4dijIWAjtQcnnSQ2ERi40o4uKWAjthE2MJTaz';
+               script-src 'self' cdn.jsdelivr.net 'sha384-MGPtn2ZFqxH3/HIoscNr8B04Chn9iy+Z5LlJaB/8sxl0ac1bawZVAFCchK0EIdhF';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1034,67 +1034,52 @@ function drawFireChart() {
   const BASE_YEAR = new Date().getFullYear();
   const YEARS     = 40;  // 模擬未來 40 年
 
-  // ── 歷史快照：全部顯示（不限每年一筆），依日期排序 ─────────
+  // ── 日期字串 → 小數年份（讓線性軸呈現正確時間比例）──────
+  function fracYear(dateStr) {
+    const p = String(dateStr).replace(/-/g,'/').split('/');
+    const y = +p[0], m = p[1] ? +p[1] : 1, d = p[2] ? +p[2] : 15;
+    return y + ((m - 1) * 30.44 + d) / 365.25;
+  }
+
+  // ── 歷史快照（全部顯示，依日期排序）────────────────────────
   const sortedSnaps  = [...snapshots].sort((a,b) => a.date < b.date ? -1 : 1);
   const lastSnap     = sortedSnaps.length ? sortedSnaps[sortedSnaps.length - 1] : null;
   const lastRealYear = lastSnap ? parseInt(lastSnap.date.slice(0,4)) : BASE_YEAR - 1;
-
-  // 模擬起點：有快照用最新一筆淨值，沒有快照用目前輸入計算
-  const startNet = lastSnap
-    ? lastSnap.net
+  const startNet     = lastSnap ? lastSnap.net
     : (pricesReady ? calcNet(getCurrentHoldings()) : 0);
 
-  // ── X 軸標籤 ────────────────────────────────────────────────
-  // 歷史段：每筆快照顯示「YYYY/MM」；同月有多筆改用「YYYY/MM/DD」
-  const usedLbls = new Set();
-  const snapLbls = sortedSnaps.map(s => {
-    let lbl = s.date.slice(0,7).replace('-','/');           // "YYYY/MM"
-    if (usedLbls.has(lbl)) lbl = s.date.replace(/-/g,'/'); // "YYYY/MM/DD"
-    usedLbls.add(lbl);
-    return lbl;
-  });
-
-  // 模擬段：從最新快照年份的下一年開始，每年一個標籤（字串 "YYYY"）
+  // ── 模擬年份 ─────────────────────────────────────────────────
   const simStartYear = Math.max(BASE_YEAR, lastRealYear + 1);
   const simYears = [];
   for (let yr = simStartYear; yr <= BASE_YEAR + YEARS; yr++) simYears.push(yr);
 
-  const labels = [...snapLbls, ...simYears.map(yr => yr + '/01')];
-
-  // ── 三條線的資料陣列 ─────────────────────────────────────────
-  const dsReal   = [...sortedSnaps.map(s => Math.round(s.net)), ...simYears.map(() => null)];
-  const dsAccum  = [...sortedSnaps.map(() => null),              ...simYears.map(() => null)];
-  const dsWithdr = [...sortedSnaps.map(() => null),              ...simYears.map(() => null)];
+  // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
+  const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
+  const dsAccum  = [];
+  const dsWithdr = [];
 
   // ── 銜接點 + 模擬迴圈 ──────────────────────────────────────
-  let simVal   = startNet;
-  let fireYear = null;
-  const simOffset = sortedSnaps.length;  // 模擬段在陣列中的起始索引
+  let simVal = startNet, fireYear = null;
 
-  if (sortedSnaps.length > 0) {
-    dsAccum[simOffset - 1] = Math.round(startNet);      // 最後快照同時是藍線起點（銜接）
+  if (lastSnap) {
+    dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
     simVal = simVal * (1 + retRate) + monthly * 12;     // 預推進一年供第一模擬年使用
   }
-
-  for (let i = 0; i < simYears.length; i++) {
-    const yr  = simYears[i];
-    const idx = simOffset + i;
+  for (const yr of simYears) {
     if (fireYear === null && simVal >= target) fireYear = yr;  // 偵測首次達標年份
     if (fireYear === null) {
-      dsAccum[idx]  = Math.round(simVal); dsWithdr[idx] = null;
+      dsAccum.push({ x: yr, y: Math.round(simVal) });
       simVal = simVal * (1 + retRate) + monthly * 12;
     } else {
-      dsAccum[idx]  = null;
-      dsWithdr[idx] = Math.max(0, Math.round(simVal));
+      dsWithdr.push({ x: yr, y: Math.max(0, Math.round(simVal)) });
       simVal = simVal * (1 + retRate) - simVal * wdrRate;
     }
   }
 
   // ── 圖表標注設定 ────────────────────────────────────────────
   const RETIREMENT_YEAR = 2032;  // 預計退休年份（可依個人計畫修改）
-  const retLbl = RETIREMENT_YEAR + '/01';  // labels 陣列中的字串形式
 
-  // 目標門檻水平虛線
+  // ── 目標門檻水平虛線 ─────────────────────────────────────────
   const annotations = {
     targetLine: {
       type:'line', yMin:target, yMax:target,
@@ -1103,25 +1088,24 @@ function drawFireChart() {
     },
   };
 
-  // 財務自由達標點（綠色圓點）
+  // 財務自由達標點（綠色圓點；xValue 用數值年份配合線性軸）
   if (fireYear) {
-    const fireIdx = labels.indexOf(fireYear + '/01');
+    const fp = dsAccum.find(p => p.x === fireYear) ?? dsWithdr[0];
     annotations.firePoint = {
-      type:'point', xValue:fireYear + '/01', yValue:dsAccum[fireIdx] ?? target,
+      type:'point', xValue:fireYear, yValue:fp?.y ?? target,
       radius:6, backgroundColor:'#3fb950', borderColor:'#3fb950', borderWidth:2,
       label:{ content:'★ 財務自由', display:true, position:'top', color:'#3fb950', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
     };
   }
 
-  // 房貸結清點（黃色圓點，有填房貸期數才顯示）
+  // 房貸結清點（黃色圓點）
   const h = getCurrentHoldings();
   if (h.months > 0) {
-    const mortYr  = lastRealYear + Math.ceil(h.months / 12);
+    const mortYr = lastRealYear + Math.ceil(h.months / 12);
     if (mortYr <= BASE_YEAR + YEARS) {
-      const mortIdx = labels.indexOf(mortYr + '/01');
-      const mortVal = mortIdx >= 0 ? (dsAccum[mortIdx] ?? dsWithdr[mortIdx]) : null;
-      if (mortVal) annotations.mortPoint = {
-        type:'point', xValue:mortYr + '/01', yValue:mortVal,
+      const mp = dsAccum.find(p => p.x === mortYr) ?? dsWithdr.find(p => p.x === mortYr);
+      if (mp) annotations.mortPoint = {
+        type:'point', xValue:mortYr, yValue:mp.y,
         radius:5, backgroundColor:'#d29922', borderColor:'#d29922', borderWidth:2,
         label:{ content:'房貸結清', display:true, position:'top', color:'#d29922', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
       };
@@ -1132,30 +1116,53 @@ function drawFireChart() {
   const cfg = {
     type:'line',
     data:{
-      labels,
       datasets:[
-        // 橘線：實際快照紀錄（有資料才有點）
-        { label:'實際快照',   data:dsReal,   borderColor:'#f0883e', backgroundColor:'rgba(240,136,62,0.15)',  borderWidth:2.5, pointRadius:5, pointHoverRadius:7, pointBackgroundColor:'#f0883e', tension:0.3, fill:false,  spanGaps:false },
+        // 橘線：實際快照（每筆都是真實持倉紀錄）
+        { label:'實際快照（橘）', data:dsReal,   borderColor:'#f0883e', backgroundColor:'rgba(240,136,62,0.15)', borderWidth:2.5, pointRadius:5, pointHoverRadius:7, pointBackgroundColor:'#f0883e', tension:0.3, fill:false },
         // 藍線：模擬累積期（持續投入直到達標）
-        { label:'模擬累積期', data:dsAccum,  borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,0.07)',  borderWidth:2.5, pointRadius:0, tension:0.4, fill:true, spanGaps:false },
-        // 綠虛線：模擬提領期（達標後開始提領）
-        { label:'模擬提領期', data:dsWithdr, borderColor:'#3fb950', backgroundColor:'rgba(63,185,80,0.07)',   borderWidth:2.5, borderDash:[6,3], pointRadius:0, tension:0.4, fill:true, spanGaps:false }
+        { label:'模擬累積（藍）', data:dsAccum,  borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,0.07)', borderWidth:2.5, pointRadius:0, tension:0.4, fill:true },
+        // 綠虛線：模擬提領期（達標後退休提領）
+        { label:'退休提領（綠）', data:dsWithdr, borderColor:'#3fb950', backgroundColor:'rgba(63,185,80,0.07)',  borderWidth:2.5, borderDash:[6,3], pointRadius:0, tension:0.4, fill:true }
       ]
     },
     options:{
       responsive:false, maintainAspectRatio:false,
-      interaction:{ intersect:false, mode:'index' },  // hover 時顯示同一 X 軸的所有資料
+      interaction:{ intersect:false, mode:'nearest' },
       plugins:{
-        legend:{ labels:{ color:'#8b949e', font:{size:12}, usePointStyle:true } },
+        legend:{
+          position:'top',
+          labels:{ color:'#e6edf3', font:{ size:13, weight:'600' }, usePointStyle:true, padding:24 }
+        },
         tooltip:{
           backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
           titleColor:'#e6edf3', bodyColor:'#8b949e',
-          callbacks:{ label: ctx => ctx.parsed.y!=null ? `  ${ctx.dataset.label}：NT$ ${fmt(ctx.parsed.y)}` : null }
+          callbacks:{
+            title: items => {
+              if (!items.length) return '';
+              const v = items[0].parsed.x;
+              const yr = Math.floor(v);
+              const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
+              return `${yr} / ${String(mo).padStart(2,'0')}`;
+            },
+            label: ctx => ctx.parsed.y != null ? `  ${ctx.dataset.label}：NT$ ${fmt(ctx.parsed.y)}` : null
+          }
         },
         annotation:{ annotations }
       },
       scales:{
-        x:{ ticks:{ color:'#8b949e', autoSkip:false, maxRotation:45, minRotation:0, font:{size:11} }, grid:{ color:'#21262d' } },
+        x:{
+          type:'linear',
+          ticks:{
+            color:'#8b949e', font:{size:11}, maxRotation:45, minRotation:0,
+            stepSize:1,
+            callback: v => {
+              const yr = Math.floor(v);
+              const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
+              return `${yr}/${String(mo).padStart(2,'0')}`;
+            }
+          },
+          grid:{ color:'#21262d' }
+        },
         y:(()=>{
           // Y 軸刻度演算法：以目標資產 × 1.3 為基準，計算美觀的步距
           // 目的：避免步距過大（看不出變化）或過小（刻度太密）
@@ -1182,16 +1189,15 @@ function drawFireChart() {
   };
 
   // ── 退休年份垂直標線（Canvas 直接繪製）─────────────────────
-  // 注意：chartjs-plugin-annotation 不支援 category 型 X 軸的垂直線，
-  // 改用 afterDraw hook 直接在 canvas 上手動畫線和標籤框
   const retirementLinePlugin = {
     id: 'retireLine',
     afterDraw(chart) {
-      const idx = chart.data.labels.indexOf(retLbl);
-      if (idx < 0) return;  // 2032 不在範圍內則不畫
+      if (!chart.scales.x) return;
+      const px = chart.scales.x.getPixelForValue(RETIREMENT_YEAR);
+      if (px < chart.chartArea.left || px > chart.chartArea.right) return;
 
       const { ctx, chartArea: { top, bottom } } = chart;
-      const x = chart.scales.x.getPixelForValue(idx);
+      const x = px;
       ctx.save();
 
       // 繪製粉色虛線
@@ -1237,12 +1243,11 @@ function drawFireChart() {
   const savedScroll   = container.scrollLeft;          // 保留捲動位置
   const containerW    = container.clientWidth  || 800;
   const containerH    = container.clientHeight || 420;
-  const retIdxInLbls  = labels.indexOf(retLbl);                     // 退休年在 labels 的位置
-  const safeRetIdx    = retIdxInLbls >= 0 ? retIdxInLbls            // 退休年存在
-    : Math.max(snapLbls.length + (RETIREMENT_YEAR - simStartYear), 1); // 估算位置
-  const totalPts      = labels.length;                              // 資料點總數
-  const pxPerPt       = Math.ceil(containerW * 2 / 3 / Math.max(safeRetIdx, 1));  // 每格像素
-  const totalWidth    = Math.max(pxPerPt * totalPts, containerW);   // 畫布總寬
+  const firstX        = dsReal.length ? dsReal[0].x : simStartYear;  // 最早資料點
+  const preRetSpan    = Math.max(RETIREMENT_YEAR - firstX, 1);        // 首點到退休年的跨度
+  const totalSpan     = Math.max(BASE_YEAR + YEARS - firstX, preRetSpan + 1);
+  const pxPerYear     = Math.ceil(containerW * 2 / 3 / preRetSpan);  // 每年像素
+  const totalWidth    = Math.max(Math.ceil(pxPerYear * totalSpan), containerW);
   canvas.width        = totalWidth;
   canvas.height       = containerH;
   canvas.style.width  = totalWidth  + 'px';
