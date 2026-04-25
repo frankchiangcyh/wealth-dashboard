@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-yuwpjviPjN1kmRs9QqI8QCa+w0qm++1CLMXyqozNww5lKpBi4nwx2yqwKqyvzVUg';
+               script-src 'self' cdn.jsdelivr.net 'sha384-txog+oNB6daw31BZ/I551WQTZvdmhndF+dTGctGT3zfqb3f1Tbj7c7TwUHLJkOtM';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -967,7 +967,7 @@ function refreshAll() {
   document.getElementById('display-cash').textContent         = 'NT$ ' + fmt(h.cash);
 
   updateQuoteTable();
-  drawFireChart();
+  try { drawFireChart(); } catch(e) { console.error('drawFireChart:', e); }
   // 持倉改變時重算加權估算（returnRefData 已快取，不重新發 API 請求）
   if (returnRefData) renderReturnRef(returnRefData);
 }
@@ -1811,7 +1811,33 @@ updateClock();
   }
   updateGoogleStatus();
 
-  // Restore cached prices for immediate display
+  // ── 事件綁定放在最前面，確保任何後續操作拋出例外時按鈕仍有效 ────────────
+  document.getElementById('btn-google')     .addEventListener('click', handleGoogleBtn);
+  document.getElementById('secret-cancel')  .addEventListener('click', closeSecretModal);
+  document.getElementById('secret-confirm') .addEventListener('click', confirmSecret);
+  document.getElementById('btn-save-snapshot').addEventListener('click', addSnapshot);
+  document.getElementById('btn-add-field')  .addEventListener('click', addCustomField);
+
+  document.getElementById('snapshotList').addEventListener('click', e => {
+    const btn = e.target.closest('.snap-del');
+    if (!btn) return;
+    const i = parseInt(btn.dataset.idx, 10);
+    if (!isNaN(i)) deleteSnapshot(i);
+  });
+
+  document.getElementById('customFields').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-remove-row');
+    if (btn) btn.closest('.custom-asset-row').remove();
+  });
+
+  HOLDINGS_KEYS.forEach(k => {
+    document.getElementById('f-' + k).addEventListener('input', () => {
+      saveHoldings();
+      if (pricesReady) { try { refreshAll(); } catch(e) { console.error('refreshAll:', e); } }
+    });
+  });
+
+  // ── 從快取報價立即顯示（refreshAll 包 try-catch 避免圖表錯誤中斷後續流程）
   const cached = loadPricesCache();
   if (cached?.prices) {
     Object.assign(prices, cached.prices);
@@ -1819,7 +1845,7 @@ updateClock();
     pricesReady = true;
     setQuoteStatus('cached', cached.time);
     updateQuoteTable();
-    refreshAll();
+    try { refreshAll(); } catch(e) { console.error('refreshAll (cached):', e); }
   }
 
   renderSnapshots();
@@ -1833,49 +1859,18 @@ updateClock();
     btn.textContent = '⏳ 授權中…';
     await handleOAuthCallback(oauthCode);
   } else if (isAuthenticated()) {
-    // Sync latest snapshots from Sheets on load
     syncFromSheets();
   }
-
-  // ── 靜態按鈕事件綁定（取代 HTML 的 onclick 屬性，符合 CSP hash 規範）────
-  document.getElementById('btn-google')     .addEventListener('click', handleGoogleBtn);
-  document.getElementById('secret-cancel')  .addEventListener('click', closeSecretModal);
-  document.getElementById('secret-confirm') .addEventListener('click', confirmSecret);
-  document.getElementById('btn-save-snapshot').addEventListener('click', addSnapshot);
-  document.getElementById('btn-add-field')  .addEventListener('click', addCustomField);
-
-  // ── 快照刪除：事件委派（renderSnapshots 動態產生的按鈕無法預先綁定）────────
-  document.getElementById('snapshotList').addEventListener('click', e => {
-    const btn = e.target.closest('.snap-del');
-    if (!btn) return;
-    const i = parseInt(btn.dataset.idx, 10);
-    if (!isNaN(i)) deleteSnapshot(i);
-  });
-
-  // ── 自訂欄位移除：事件委派（addCustomField 動態產生的按鈕）──────────────
-  document.getElementById('customFields').addEventListener('click', e => {
-    const btn = e.target.closest('.btn-remove-row');
-    if (btn) btn.closest('.custom-asset-row').remove();
-  });
-
-  // ── 持倉輸入：自動儲存 + 即時重算 ─────────────────────────────────────
-  HOLDINGS_KEYS.forEach(k => {
-    document.getElementById('f-' + k).addEventListener('input', () => {
-      saveHoldings();
-      if (pricesReady) refreshAll();
-    });
-  });
 
   // Fetch live quotes（每 5 分鐘自動更新）
   fetchQuotes();
   setInterval(fetchQuotes, QUOTE_REFRESH_MS);
 
-  // 抓取歷史年化報酬參考資料（一次性，不需週期更新）
-  // 不 await，在背景非同步執行，不阻塞頁面載入
+  // 抓取歷史年化報酬參考資料（背景非同步，不阻塞頁面）
   fetchHistoricalReturns().then(data => {
     if (!data) return;
-    returnRefData = data;   // 快取，供持倉更新時重算加權
-    renderReturnRef(data);  // 首次渲染
+    returnRefData = data;
+    renderReturnRef(data);
   });
 })();
 </script>
