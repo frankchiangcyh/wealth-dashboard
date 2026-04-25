@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-kNaavxCF0vRd5ztWmuRdO3MviFqqHNpxhuH9shj5wMoUSj5ZXCAcHVSTVtORLdnF';
+               script-src 'self' cdn.jsdelivr.net 'sha384-raAxGfZrJThWMyJWBcNR1GiJfbBeVGM3R8jlibAkW9Y74eHHooQNGRjMDioLbVN2';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -110,7 +110,11 @@ body {
 .legend-pct { color:#e6edf3; font-weight:600; }
 
 /* Chart */
-.chart-container { position:relative; height:420px; }
+.chart-container { position:relative; height:420px; overflow-x:auto; overflow-y:hidden; }
+.chart-container::-webkit-scrollbar { height:6px; }
+.chart-container::-webkit-scrollbar-track { background:#0d1117; }
+.chart-container::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+.chart-container::-webkit-scrollbar-thumb:hover { background:#58a6ff; }
 
 /* Sliders */
 .slider-grid {
@@ -1057,10 +1061,15 @@ function drawFireChart() {
     // 實際快照線：有快照的年份填入，其他填 null（不連線）
     dsReal.push(realByYear[yr] ? realByYear[yr].net : null);
 
-    if (yr <= lastRealYear) {
-      // 已有實際資料的年份：模擬線留空
+    if (yr < lastRealYear) {
+      // 早於最新快照：模擬線留空
       dsAccum.push(null); dsWithdr.push(null);
-      if (yr === lastRealYear) simVal = startNet;
+    } else if (yr === lastRealYear) {
+      // 銜接點：橘線與藍線共用同一座標，視覺上無縫連接
+      simVal = startNet;
+      dsAccum.push(Math.round(simVal));
+      dsWithdr.push(null);
+      simVal = simVal * (1 + retRate) + monthly * 12;  // 預推進供下一年使用
     } else {
       // 模擬未來年份
       if (fireYear === null && simVal >= target) fireYear = yr;  // 偵測首次達標年份
@@ -1130,7 +1139,7 @@ function drawFireChart() {
       ]
     },
     options:{
-      responsive:true, maintainAspectRatio:false,
+      responsive:false, maintainAspectRatio:false,
       interaction:{ intersect:false, mode:'index' },  // hover 時顯示同一 X 軸的所有資料
       plugins:{
         legend:{ labels:{ color:'#8b949e', font:{size:12}, usePointStyle:true } },
@@ -1218,10 +1227,26 @@ function drawFireChart() {
     }
   };
 
+  // ── Canvas 尺寸：退休年落在可視寬度 2/3 處，超出部分可橫向捲動 ──
+  const canvas     = document.getElementById('fireChart');
+  const container  = canvas.parentElement;
+  const savedScroll   = container.scrollLeft;          // 保留捲動位置
+  const containerW    = container.clientWidth  || 800;
+  const containerH    = container.clientHeight || 420;
+  const retIdx        = Math.max(RETIREMENT_YEAR - BASE_YEAR, 1);  // 退休年距今幾格
+  const totalPts      = YEARS + 1;                                  // 資料點總數
+  const pxPerPt       = Math.ceil(containerW * 2 / 3 / retIdx);    // 每格像素
+  const totalWidth    = Math.max(pxPerPt * totalPts, containerW);   // 畫布總寬
+  canvas.width        = totalWidth;
+  canvas.height       = containerH;
+  canvas.style.width  = totalWidth  + 'px';
+  canvas.style.height = containerH  + 'px';
+
   // 掛載自訂 plugin，銷毀舊圖表後重建（避免 canvas 衝突）
   cfg.plugins = [retirementLinePlugin];
   if (fireChart) fireChart.destroy();
-  fireChart = new Chart(document.getElementById('fireChart').getContext('2d'), cfg);
+  fireChart = new Chart(canvas.getContext('2d'), cfg);
+  container.scrollLeft = savedScroll;                  // 還原捲動位置
 }
 
 // ╔══════════════════════════════════════════════════════════╗
