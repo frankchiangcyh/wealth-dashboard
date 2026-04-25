@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-txog+oNB6daw31BZ/I551WQTZvdmhndF+dTGctGT3zfqb3f1Tbj7c7TwUHLJkOtM';
+               script-src 'self' cdn.jsdelivr.net 'sha384-7lC5a8SxpsPWx7RIaTA1pPMVa6ZiUJ+Z3plahv3JQNMuKd2lMhcLMCfeOb3rfeLw';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1152,9 +1152,20 @@ function drawFireChart() {
       scales:{
         x:{
           type:'linear',
+          // 讓每個 tick 對齊到每月 1 日（calendar-aligned monthly ticks）
+          afterBuildTicks(axis) {
+            if (axis.min == null || axis.max == null) return;
+            const tks = [];
+            for (let yr = Math.floor(axis.min); yr <= Math.ceil(axis.max); yr++) {
+              for (let mo = 1; mo <= 12; mo++) {
+                const x = fracYear(`${yr}/${String(mo).padStart(2,'0')}/01`);
+                if (x >= axis.min - 0.05 && x <= axis.max + 0.05) tks.push({ value: x });
+              }
+            }
+            axis.ticks = tks;
+          },
           ticks:{
-            color:'#8b949e', font:{size:11}, maxRotation:45, minRotation:0,
-            stepSize:1,
+            color:'#8b949e', font:{size:9}, maxRotation:90, minRotation:45,
             callback: v => {
               const yr = Math.floor(v);
               const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
@@ -1246,7 +1257,8 @@ function drawFireChart() {
   const firstX        = dsReal.length ? dsReal[0].x : simStartYear;  // 最早資料點
   const preRetSpan    = Math.max(RETIREMENT_YEAR - firstX, 1);        // 首點到退休年的跨度
   const totalSpan     = Math.max(BASE_YEAR + YEARS - firstX, preRetSpan + 1);
-  const pxPerYear     = Math.ceil(containerW * 2 / 3 / preRetSpan);  // 每年像素
+  // 每年最少 120px（10px/月 × 12 個月），確保月份標籤有足夠寬度
+  const pxPerYear     = Math.max(Math.ceil(containerW * 2 / 3 / preRetSpan), 120);
   const totalWidth    = Math.max(Math.ceil(pxPerYear * totalSpan), containerW);
   canvas.width        = totalWidth;
   canvas.height       = containerH;
