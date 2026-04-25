@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-7tV1f0ZRojNK2MC/8tA22jr5IlPy3w6+nZm9l1W8pvySRUqRHSGWXlZLZFlf+zu5';
+               script-src 'self' cdn.jsdelivr.net 'sha384-z5ADFOk00PWqQFr5V+d5tHk7p5Dw+SSybZdaaBYfrf1ZTqip5UeEqptDEkWGanFv';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1066,8 +1066,13 @@ function drawFireChart() {
     simVal = simVal * (1 + retRate) + monthly * 12;     // 預推進一年供第一模擬年使用
   }
   for (const yr of simYears) {
-    if (fireYear === null && simVal >= target) fireYear = yr;  // 偵測首次達標年份
-    if (fireYear === null) {
+    if (fireYear === null && simVal >= target) {
+      // 達標年份：同時是藍線最後一點 + 綠線第一點，確保無縫銜接
+      fireYear = yr;
+      dsAccum.push({ x: yr, y: Math.round(simVal) });
+      dsWithdr.push({ x: yr, y: Math.round(simVal) });
+      simVal = simVal * (1 + retRate) - simVal * wdrRate;
+    } else if (fireYear === null) {
       dsAccum.push({ x: yr, y: Math.round(simVal) });
       simVal = simVal * (1 + retRate) + monthly * 12;
     } else {
