@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-MGPtn2ZFqxH3/HIoscNr8B04Chn9iy+Z5LlJaB/8sxl0ac1bawZVAFCchK0EIdhF';
+               script-src 'self' cdn.jsdelivr.net 'sha384-yuwpjviPjN1kmRs9QqI8QCa+w0qm++1CLMXyqozNww5lKpBi4nwx2yqwKqyvzVUg';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1216,13 +1216,13 @@ function drawFireChart() {
       const label = '\uD83C\uDF82 退休 2032（50歲）';
       ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
       const tw = ctx.measureText(label).width;
-      const px = 8, bh = 22;
-      const bx = x - tw / 2 - px;
+      const pad = 8, bh = 22;
+      const bx = x - tw / 2 - pad;
       const by = top + 10;
       ctx.fillStyle = 'rgba(13,17,23,0.92)';
       ctx.beginPath();
-      ctx.roundRect ? ctx.roundRect(bx, by, tw + px * 2, bh, 4)
-                    : ctx.rect(bx, by, tw + px * 2, bh);
+      ctx.roundRect ? ctx.roundRect(bx, by, tw + pad * 2, bh, 4)
+                    : ctx.rect(bx, by, tw + pad * 2, bh);
       ctx.fill();
       ctx.strokeStyle = '#f778ba';
       ctx.lineWidth   = 1.2;
