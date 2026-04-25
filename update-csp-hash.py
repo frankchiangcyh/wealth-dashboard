@@ -42,10 +42,10 @@ def main():
         print("✅ Hash 相同，無需更新。")
         return
 
-    # 更新
+    # 更新（用 write_bytes 避免 Windows text mode 把 \n 雙重轉成 \r\r\n）
     updated = update_csp_hash(text, new_hash)
-    HTML_FILE.write_text(updated, encoding='utf-8')
-    print("✅ CSP hash 已更新完成。")
+    HTML_FILE.write_bytes(updated.encode('utf-8'))
+    print("OK CSP hash updated.")
     print("請記得 git add index.html && git commit && git push")
 
 if __name__ == '__main__':
