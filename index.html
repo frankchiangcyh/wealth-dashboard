@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-07SZVBRL0lfxbdORvb21PUdUtxRNw8Ma3G2YlLHz62C2f40HfhBQNL+01upp7CQd';
+               script-src 'self' cdn.jsdelivr.net 'sha384-IW/KVpctawpk5zXonJj6m3jZOcR9bzTCMvupqocKGEVzINOSzNZ9EvW5bacBooDZ';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -110,11 +110,14 @@ body {
 .legend-pct { color:#e6edf3; font-weight:600; }
 
 /* Chart */
+.chart-outer    { position:relative; }          /* overlay canvas 的定位基準 */
 .chart-container { position:relative; height:560px; overflow-x:auto; overflow-y:hidden; }
 .chart-container::-webkit-scrollbar { height:6px; }
 .chart-container::-webkit-scrollbar-track { background:#0d1117; }
 .chart-container::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
 .chart-container::-webkit-scrollbar-thumb:hover { background:#58a6ff; }
+/* 凍結 Y 軸 overlay：絕對定位在 chart-outer 左上角，不進入捲動流 */
+#yAxisOverlay   { position:absolute; top:0; left:0; z-index:5; pointer-events:none; }
 
 /* Sliders */
 .slider-grid {
@@ -295,7 +298,10 @@ body {
 <!-- Row 2: 退休模擬圖（全寬） -->
 <div class="card chart-full">
   <div class="card-title">退休資產模擬 — 實際快照 &amp; 未來模擬</div>
-  <div class="chart-container"><canvas id="fireChart"></canvas></div>
+  <div class="chart-outer">
+    <canvas id="yAxisOverlay"></canvas>
+    <div class="chart-container"><canvas id="fireChart"></canvas></div>
+  </div>
   <div class="slider-grid">
     <div class="slider-row">
       <label>每月投入 (TWD)</label>
@@ -1281,8 +1287,35 @@ function drawFireChart() {
   canvas.style.width  = totalWidth  + 'px';
   canvas.style.height = containerH  + 'px';
 
+  // ── 凍結 Y 軸 plugin：afterDraw 把 Y 軸區域複製到 overlay canvas ──
+  const stickyYAxisPlugin = {
+    id: 'stickyYAxis',
+    afterDraw(chart) {
+      const overlay = document.getElementById('yAxisOverlay');
+      if (!overlay) return;
+      const { chartArea, scales } = chart;
+      if (!chartArea || !scales.y) return;
+
+      // Y 軸寬度 = chartArea.left（含刻度 + 標籤 + padding）
+      const axisW = Math.ceil(chartArea.left);
+      const h     = chart.height;
+
+      overlay.width        = axisW;
+      overlay.height       = h;
+      overlay.style.width  = axisW  + 'px';
+      overlay.style.height = h + 'px';
+
+      const octx = overlay.getContext('2d');
+      // 先填底色避免透明
+      octx.fillStyle = '#0d1117';
+      octx.fillRect(0, 0, axisW, h);
+      // 從主 canvas 複製 Y 軸區域
+      octx.drawImage(chart.canvas, 0, 0, axisW, h, 0, 0, axisW, h);
+    }
+  };
+
   // 掛載自訂 plugin，銷毀舊圖表後重建（避免 canvas 衝突）
-  cfg.plugins = [retirementLinePlugin];
+  cfg.plugins = [retirementLinePlugin, stickyYAxisPlugin];
   if (fireChart) fireChart.destroy();
   fireChart = new Chart(canvas.getContext('2d'), cfg);
   container.scrollLeft = savedScroll;                  // 還原捲動位置
