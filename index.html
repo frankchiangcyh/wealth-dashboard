@@ -291,11 +291,56 @@ body.locked > *:not(#lock-screen) { visibility:hidden; }
       <span class="live-dot loading" id="quote-dot"></span>
       <span id="quote-status-text">報價載入中…</span>
     </div>
+    <button class="btn-lock" id="btn-lock">🔒 鎖定</button>
     <div class="timestamp" id="clock"></div>
   </div>
 </div>
 
 <div class="alert-banner" id="alert-banner"></div>
+
+<!-- 鎖定畫面：App 層密碼保護，未解鎖前儀表板以 body.locked 完全隱藏 -->
+<!-- 狀態 A（#lock-setup）：首次使用，無 wd_lock_hash → 設定密碼 -->
+<!-- 狀態 B（#lock-unlock）：已設密碼，sessionStorage 無解鎖旗標 → 輸入密碼 -->
+<div id="lock-screen">
+  <div class="lock-logo">⚡ 資產戰情室</div>
+  <div class="lock-subtitle">個人退休資產追蹤儀表板</div>
+  <div class="lock-box">
+
+    <div id="lock-setup">
+      <div class="lock-icon">🔐</div>
+      <h2>設定解鎖密碼</h2>
+      <p class="lock-box-desc">首次使用需設定密碼。<br>密碼僅在你的瀏覽器本地驗證，<br>不會傳送至任何伺服器。</p>
+      <div class="lock-input-wrap">
+        <input class="lock-pw-input" id="lock-pw1" type="password"
+               placeholder="設定密碼" autocomplete="new-password">
+        <button class="lock-eye" data-target="lock-pw1">👁</button>
+      </div>
+      <div class="lock-input-wrap">
+        <input class="lock-pw-input" id="lock-pw2" type="password"
+               placeholder="再次輸入確認" autocomplete="new-password">
+        <button class="lock-eye" data-target="lock-pw2">👁</button>
+      </div>
+      <div class="lock-error" id="lock-setup-error"></div>
+      <button class="lock-btn" id="btn-set-password">設定並進入儀表板</button>
+      <div class="lock-hint">密碼以 SHA-256 雜湊儲存於 localStorage<br>忘記密碼？清除 localStorage 後重新設定</div>
+    </div>
+
+    <div id="lock-unlock" style="display:none;">
+      <div class="lock-icon">🔒</div>
+      <h2>輸入密碼解鎖</h2>
+      <p class="lock-box-desc">儀表板已鎖定。輸入密碼繼續。</p>
+      <div class="lock-error" id="lock-unlock-error"></div>
+      <div class="lock-input-wrap">
+        <input class="lock-pw-input" id="lock-pw-input" type="password"
+               placeholder="輸入密碼" autocomplete="current-password">
+        <button class="lock-eye" data-target="lock-pw-input">👁</button>
+      </div>
+      <button class="lock-btn" id="btn-unlock">🔓 解鎖</button>
+      <div class="lock-hint">按 Enter 可直接解鎖<br>忘記密碼？清除 localStorage 後重新設定</div>
+    </div>
+
+  </div>
+</div>
 
 <!-- Secret setup modal -->
 <div class="modal-overlay" id="secret-modal">
