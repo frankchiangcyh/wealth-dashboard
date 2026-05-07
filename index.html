@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-zrkKKqef9lvBOA6Rc/auD2rFOAsUBKRPDZd6UqQ4T5KXRsuRBAFL1/qUpRP9+hL4';
+               script-src 'self' cdn.jsdelivr.net 'sha384-GaSwFbTd8ZZ1qZTYERFU9V8FUOaYds/jvV9yvpXLMFPbudAQyHR+ubllxavzoNFz';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -2534,6 +2534,44 @@ async function confirmUnlock() {
     document.getElementById('lock-pw-input').value = '';
     document.getElementById('lock-pw-input').focus();
   }
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                 鎖定畫面 — 閒置計時器                     ║
+// ╚══════════════════════════════════════════════════════════╝
+
+const IDLE_MS = 30 * 60 * 1000;   // 閒置自動鎖定門檻：30 分鐘
+let   idleTimer     = null;        // setTimeout handle
+let   idleListening = false;       // 是否已綁定事件監聽器
+
+// 重設閒置計時器（任何使用者互動時呼叫）
+function resetIdleTimer() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(lockApp, IDLE_MS);
+}
+
+// 儲存事件處理器參考（確保 removeEventListener 能正確移除同一個函式）
+const _idleHandler = resetIdleTimer;
+
+// 啟動閒置監聽（解鎖後呼叫）
+// 監聽 mousemove / keydown / click / touchstart / scroll 的捕獲階段
+function startIdleWatch() {
+  if (idleListening) return;
+  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(ev =>
+    document.addEventListener(ev, _idleHandler, { capture: true, passive: true })
+  );
+  idleListening = true;
+  resetIdleTimer();  // 解鎖當下立即開始計時
+}
+
+// 停止閒置監聽（鎖定時呼叫）
+function stopIdleWatch() {
+  clearTimeout(idleTimer);
+  if (!idleListening) return;
+  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(ev =>
+    document.removeEventListener(ev, _idleHandler, { capture: true })
+  );
+  idleListening = false;
 }
 
 // ── INIT ───────────────────────────────────────────────────
