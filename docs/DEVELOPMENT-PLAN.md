@@ -376,6 +376,27 @@ Step 3  建立 GitHub Private Repo
 
 ---
 
+### Phase 9：鎖定畫面 ✅ 完成（2026-05-07）
+
+| 狀態 | 項目 | 說明 |
+|------|------|------|
+| [x] | CSS：body.locked + lock-screen 樣式 | visibility:hidden 隱藏儀表板，z-index:9999 全頁覆蓋 |
+| [x] | HTML：lock-screen（設定/解鎖兩態）| #lock-setup / #lock-unlock，JS 切換顯示 |
+| [x] | HTML：Header 🔒 鎖定按鈕 | id="btn-lock"，hover 變紅 |
+| [x] | JS：hashPassword | SubtleCrypto SHA-256，64 位 hex，async |
+| [x] | JS：isLockEnabled / isUnlocked | 查詢 localStorage / sessionStorage 狀態 |
+| [x] | JS：showLockScreen / hideLockScreen | 顯示/隱藏鎖定層，切換 body.locked |
+| [x] | JS：lockApp / unlockApp | 狀態切換 + 閒置計時器控制 + init() 重啟 |
+| [x] | JS：confirmSetPassword | 驗證兩次輸入 → hash → 存 LS → 解鎖 |
+| [x] | JS：confirmUnlock | hash 比對 → 成功解鎖 / 失敗顯示錯誤 |
+| [x] | JS：startIdleWatch / stopIdleWatch | 5 事件監聽，30 分鐘閒置自動鎖定 |
+| [x] | init() 整合 | 鎖定事件先綁（一次性 flag），isUnlocked() 檢查，提前 return |
+| [x] | _check.js 測試 | testLockScreen：hashPassword / isLockEnabled / isUnlocked 共 10 項 |
+
+**驗收標準**：首次使用設定密碼 → 儀表板正常顯示；關分頁重開需重新輸入密碼；🔒 按鈕立即鎖定；閒置 30 分鐘自動鎖定；`window._runChecks()` 全部通過。
+
+---
+
 ## 12. 首次使用流程（使用者視角）
 
 ```
