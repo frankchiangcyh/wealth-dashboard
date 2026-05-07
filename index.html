@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-d56i5mOgG0wvVIHoK1fZ6ATvWe2wufc4cIMi1VBiGpADrNs7WlkZVbcbUNXDCiK+';
+               script-src 'self' cdn.jsdelivr.net 'sha384-xyxmWnYdVqz8xKZalpI4roKZp7tdmk4hEACZdmWT2dXhHyiW49HIbXkZcdMtj/wK';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1850,6 +1850,21 @@ function drawFireChart() {
   container.scrollLeft = savedScroll;                  // 還原捲動位置
 }
 
+// 新增快照後，把圖表捲動到最新橘色資料點的位置（讓使用者立即看到新點）
+// 偏移量：把最新快照放在視窗左側約 1/4 處，右側保留未來模擬空間
+function scrollChartToLatestSnapshot() {
+  if (!fireChart?.scales?.x || !snapshots.length) return;
+  const canvas    = document.getElementById('fireChart');
+  const container = canvas?.parentElement;
+  if (!container) return;
+  const sorted  = [...snapshots].sort((a, b) => a.date < b.date ? -1 : 1);
+  const latestX = fracYear(sorted[sorted.length - 1].date);
+  try {
+    const px = fireChart.scales.x.getPixelForValue(latestX);
+    container.scrollLeft = Math.max(0, Math.floor(px) - Math.floor(container.clientWidth / 4));
+  } catch(e) { /* 捲動失敗不影響功能 */ }
+}
+
 // ╔══════════════════════════════════════════════════════════╗
 // ║            Google OAuth 2.0 + PKCE 授權流程              ║
 // ╚══════════════════════════════════════════════════════════╝
@@ -2345,6 +2360,7 @@ async function addSnapshot() {
   snapshots.push(h);
   saveSnapshots();
   renderSnapshots();
+  scrollChartToLatestSnapshot();  // 新增後自動捲動至新快照位置
 
   // 若已登入 Google，同步寫入 Sheets
   if (isAuthenticated()) {
