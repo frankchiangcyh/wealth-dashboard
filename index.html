@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-gnFPn9RNYqsRkdBip7Z9un8QmpPRkD2rA/eVGF0Xeve4sg8aY9PFxuR6DVhXdGGo';
+               script-src 'self' cdn.jsdelivr.net 'sha384-j95i2UZg1khzGH8qG3popyXG5dIpNNeb4lIdtHVp2w0vt6swjaurDuTxlJsXsL2F';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1365,9 +1365,7 @@ function refreshAll() {
   document.getElementById('display-cash').textContent         = 'NT$ ' + fmt(h.cash);
 
   updateQuoteTable();
-  // net 傳入 drawFireChart，確保圖表藍線起始值與上方淨資產卡片完全相同
-  // （避免兩處各自呼叫 calcNet() 產生不一致）
-  try { drawFireChart(net); } catch(e) { console.error('drawFireChart:', e); }
+  try { drawFireChart(); } catch(e) { console.error('drawFireChart:', e); }
   // 持倉改變時重算加權估算（returnRefData 已快取，不重新發 API 請求）
   if (returnRefData) renderReturnRef(returnRefData);
 }
@@ -1434,8 +1432,7 @@ function fracYear(dateStr) {
 }
 
 // 根據滑桿參數，繪製未來 40 年的資產模擬曲線
-// liveNet：由 refreshAll() 傳入的即時淨資產（與卡片相同值）；null 代表報價未就緒，退回快照值
-function drawFireChart(liveNet = null) {
+function drawFireChart() {
   // 從滑桿讀取模擬參數
   const monthly   = +document.getElementById('sl-monthly').value;   // 每月投入（TWD）
   const retRate   = +document.getElementById('sl-return').value / 100;  // 年化報酬率
@@ -1451,9 +1448,16 @@ function drawFireChart(liveNet = null) {
   const sortedSnaps  = [...snapshots].sort((a,b) => a.date < b.date ? -1 : 1);
   const lastSnap     = sortedSnaps.length ? sortedSnaps[sortedSnaps.length - 1] : null;
   const lastRealYear = lastSnap ? parseInt(lastSnap.date.slice(0,4)) : BASE_YEAR - 1;
-  // 模擬起始值：直接使用由 refreshAll() 傳入的即時淨資產（與卡片保證相同）
-  // 若 liveNet 為 null（報價尚未就緒），退回最新快照值或 0
-  const startNet = (liveNet !== null) ? liveNet : (lastSnap ? lastSnap.net : 0);
+
+  // ── 模擬起始值：從淨資產卡片 DOM 讀取，確保與使用者看到的數字完全一致 ──
+  // 原理：refreshAll() 在呼叫 drawFireChart() 之前已更新 display-net 的文字；
+  //       直接從 DOM 讀取，避免任何二次計算或參數傳遞的時序問題。
+  // 初始狀態（"NT$ —"）或報價未就緒（"NT$ 0"）時數字位數 < 4，
+  // 視為無效，退回最新快照值，確保圖表不顯示錯誤的 0 元起點。
+  const cardText   = document.getElementById('display-net')?.textContent ?? '';
+  const cardDigits = cardText.replace(/[^\d]/g, '');
+  const cardNet    = cardDigits.length >= 4 ? +cardDigits : null;
+  const startNet   = (cardNet > 0) ? cardNet : (lastSnap ? lastSnap.net : 0);
 
   // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
   const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
