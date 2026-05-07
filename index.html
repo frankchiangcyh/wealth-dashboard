@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-A/yy8du1h1YgyYRNbg6nW4fGVU5ACTpcZZbvSo7HIjUxrayvQmHdRaoVjNZXwYVr';
+               script-src 'self' cdn.jsdelivr.net 'sha384-vdIRQaCifzADzeOJeZalMa8BawmZoymRzZtaHgqwDye8QuRHNLGIvUebrQ2dhP3l';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -667,6 +667,8 @@ let pricesReady = false;
 // Chart.js 圖表實例（null 表示尚未建立）
 let donutChart = null;  // 資產配置圓餅圖
 let fireChart  = null;  // 退休模擬折線圖
+// 是否已以即時報價資料完成第一次圖表捲動（避免在報價未就緒時捲動到錯誤的起始值位置）
+let fireChartLivePricesShown = false;
 
 // 各標的歷史年化報酬快取（fetchHistoricalReturns 抓到後存這裡，供持倉更新時重算加權）
 let returnRefData = null;
@@ -1846,15 +1848,20 @@ function drawFireChart() {
   const wasNull = !fireChart;                          // 首次繪圖旗標（銷毀前判斷）
   if (fireChart) fireChart.destroy();
   fireChart = new Chart(canvas.getContext('2d'), cfg);
-  if (wasNull) {
-    // 首次繪圖：自動捲動到今天的位置，讓使用者立即看到藍線起點（當前淨資產）
-    // 而非停在左側顯示多年前的歷史橘色點（舊淨資產），造成與卡片數字矛盾的誤解
+
+  // 捲動策略：
+  //   ① 第一次擁有即時報價的繪圖 → 捲到今天，讓使用者立即看到正確的藍線起始市值
+  //   ② 已捲過一次（或報價未就緒）→ 還原先前捲動位置（避免已捲動的使用者被重置）
+  // 注意：若報價尚未就緒（pricesReady=false），startNet 來自快照而非即時計算，
+  //       此時不捲到今天，否則使用者會看到錯誤的低市值數字並以為圖表有誤。
+  if (pricesReady && !fireChartLivePricesShown) {
+    fireChartLivePricesShown = true;  // 只捲一次；之後的重繪還原使用者捲動位置
     try {
       const px = fireChart.scales.x.getPixelForValue(todayFrac);
       container.scrollLeft = Math.max(0, Math.floor(px) - Math.floor(containerW / 4));
-    } catch(e) { container.scrollLeft = 0; }
+    } catch(e) { container.scrollLeft = wasNull ? 0 : savedScroll; }
   } else {
-    container.scrollLeft = savedScroll;                // 重繪：還原使用者捲動位置
+    container.scrollLeft = wasNull ? 0 : savedScroll;
   }
 }
 
