@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-sL5wfFG7dHWYHLRb2Sb0k80/rriWl58nSIGjS+Hna9hOGQQBO5qsdR6sYbhCigYe';
+               script-src 'self' cdn.jsdelivr.net 'sha384-A/yy8du1h1YgyYRNbg6nW4fGVU5ACTpcZZbvSo7HIjUxrayvQmHdRaoVjNZXwYVr';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1843,22 +1843,31 @@ function drawFireChart() {
 
   // 掛載自訂 plugin，銷毀舊圖表後重建（避免 canvas 衝突）
   cfg.plugins = [retirementLinePlugin, stickyYAxisPlugin];
+  const wasNull = !fireChart;                          // 首次繪圖旗標（銷毀前判斷）
   if (fireChart) fireChart.destroy();
   fireChart = new Chart(canvas.getContext('2d'), cfg);
-  container.scrollLeft = savedScroll;                  // 還原捲動位置
+  if (wasNull) {
+    // 首次繪圖：自動捲動到今天的位置，讓使用者立即看到藍線起點（當前淨資產）
+    // 而非停在左側顯示多年前的歷史橘色點（舊淨資產），造成與卡片數字矛盾的誤解
+    try {
+      const px = fireChart.scales.x.getPixelForValue(todayFrac);
+      container.scrollLeft = Math.max(0, Math.floor(px) - Math.floor(containerW / 4));
+    } catch(e) { container.scrollLeft = 0; }
+  } else {
+    container.scrollLeft = savedScroll;                // 重繪：還原使用者捲動位置
+  }
 }
 
-// 新增快照後，把圖表捲動到最新橘色資料點的位置（讓使用者立即看到新點）
-// 偏移量：把最新快照放在視窗左側約 1/4 處，右側保留未來模擬空間
+// 新增快照後，把圖表捲動到今天（藍線模擬起點）的位置
+// 因為模擬藍線已改為從今天出發，捲動至今天可確保使用者看到最新的模擬起始市值
 function scrollChartToLatestSnapshot() {
-  if (!fireChart?.scales?.x || !snapshots.length) return;
+  if (!fireChart?.scales?.x) return;
   const canvas    = document.getElementById('fireChart');
   const container = canvas?.parentElement;
   if (!container) return;
-  const sorted  = [...snapshots].sort((a, b) => a.date < b.date ? -1 : 1);
-  const latestX = fracYear(sorted[sorted.length - 1].date);
+  const todayFrac = fracYear(new Date().toISOString().slice(0, 10));
   try {
-    const px = fireChart.scales.x.getPixelForValue(latestX);
+    const px = fireChart.scales.x.getPixelForValue(todayFrac);
     container.scrollLeft = Math.max(0, Math.floor(px) - Math.floor(container.clientWidth / 4));
   } catch(e) { /* 捲動失敗不影響功能 */ }
 }
