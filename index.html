@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-BeWgSd944wCglrkFEh1rpbiRsxggi3yzvWiBEKBteLRtrFESj/vr3v3UWi3XUIs4';
+               script-src 'self' cdn.jsdelivr.net 'sha384-hFi6DDQy2ENKdijZD5fDK9MLJvHd/X3wBLMyYRZHPa10ysuSB9ijUHIEvYBajjdQ';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -2576,6 +2576,31 @@ function stopIdleWatch() {
 
 // ── INIT ───────────────────────────────────────────────────
 (async function init() {
+
+  // ── 鎖定畫面事件綁定（必須在任何 return 之前完成）──────────
+  // 這些按鈕在鎖定和解鎖狀態下都需要可用
+  document.getElementById('btn-set-password')?.addEventListener('click', confirmSetPassword);
+  document.getElementById('btn-unlock')       ?.addEventListener('click', confirmUnlock);
+  document.getElementById('btn-lock')         ?.addEventListener('click', lockApp);
+  document.getElementById('lock-pw-input')    ?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirmUnlock();
+  });
+  // 眼睛圖示：切換各密碼輸入框的顯示 / 隱藏
+  document.querySelectorAll('.lock-eye').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const inp = document.getElementById(btn.dataset.target);
+      if (inp) inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+  });
+
+  // ── 鎖定狀態檢查 ───────────────────────────────────────────
+  // 未解鎖：顯示鎖定畫面並提前返回（解鎖後 unlockApp() 會重新呼叫 init()）
+  if (!isUnlocked()) {
+    showLockScreen();
+    return;
+  }
+  hideLockScreen();
+  startIdleWatch();
 
   // ── 舊版 token 格式遷移（v1 → v2）───────────────────────────
   // v1 版本將 access_token + refresh_token 全存在 localStorage['wd_tokens']
