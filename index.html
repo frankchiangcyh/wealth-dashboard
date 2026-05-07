@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-5X0va1+UCD+wy98WQsnkhSAzlgN7usGiMI3mAEFEGfFO9Ppow/GKorxmoWWXisos';
+               script-src 'self' cdn.jsdelivr.net 'sha384-xQj8ftZmQRGdGYXpLj+PmVL82lLt9Q3BWRKBOWaKxs2bsfnegoqsj3cyOQQI2xX4';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1949,7 +1949,7 @@ async function handleOAuthCallback(code) {
     } else {
       const msg = tokens.error_description ?? tokens.error ?? JSON.stringify(tokens);
       showAlert('⚠ Google 授權失敗：' + msg);
-      console.error('OAuth token error:', tokens);
+      console.error('OAuth token error:', tokens.error, tokens.error_description);
       updateGoogleStatus();
       window.history.replaceState({}, '', window.location.pathname);
     }
