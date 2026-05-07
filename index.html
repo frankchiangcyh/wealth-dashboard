@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-xyxmWnYdVqz8xKZalpI4roKZp7tdmk4hEACZdmWT2dXhHyiW49HIbXkZcdMtj/wK';
+               script-src 'self' cdn.jsdelivr.net 'sha384-sL5wfFG7dHWYHLRb2Sb0k80/rriWl58nSIGjS+Hna9hOGQQBO5qsdR6sYbhCigYe';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -1446,48 +1446,46 @@ function drawFireChart() {
   const sortedSnaps  = [...snapshots].sort((a,b) => a.date < b.date ? -1 : 1);
   const lastSnap     = sortedSnaps.length ? sortedSnaps[sortedSnaps.length - 1] : null;
   const lastRealYear = lastSnap ? parseInt(lastSnap.date.slice(0,4)) : BASE_YEAR - 1;
-  const startNet     = lastSnap ? lastSnap.net
-    : (pricesReady ? calcNet(getCurrentHoldings()) : 0);
+  // 模擬起始值：優先使用即時報價計算的當前淨資產（反映今日市值）
+  // 避免快照存的是幾個月前的值，導致模擬起點與卡片顯示的淨資產不一致
+  const startNet = pricesReady
+    ? calcNet(getCurrentHoldings())
+    : (lastSnap ? lastSnap.net : 0);
 
   // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
   const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
   const dsAccum  = [];
   const dsWithdr = [];
 
-  // ── 月度模擬迴圈：從快照的「下個月」開始，確保曲線平滑連續 ──
+  // ── 月度模擬迴圈：從今天的「下個月」開始，確保曲線平滑連續 ──
   //
-  // 【為什麼要從「下個月」而非「年初」開始？】
-  //   舊版從 simStartYear（lastRealYear + 1）的 1 月才開始模擬，
-  //   若快照是 2026/05，則迴圈從 2027/01 才產生第一個月度點。
-  //   這導致兩個問題：
-  //     1. 中間 8 個月（2026/06 ~ 2026/12）完全沒有資料點
-  //        → Chart.js 拉一條平直插值線，視覺上呈現「平段」
-  //     2. 2027/01 的 simVal 只被推進了「1 個月」複利，
-  //        不是正確的「8 個月」累積，數值偏低
-  //   修正：從快照日期的下一個月開始逐月計算，每月都有一個資料點，
-  //   藍線才能呈現正確的指數複利 + 定期定額平滑上升曲線。
+  // 【為什麼從今天而非年初或快照日期？】
+  //   藍線代表「從現在出發的未來模擬」，起點應與頂部淨資產卡片一致（即時市值）。
+  //   若從年初或快照日期起算，起點值會是幾個月前的舊快照值，與卡片顯示矛盾。
+  //   改為從今天起算後：橘線=歷史快照，藍線=從今日即時市值出發的未來模擬，語意清晰。
+  //
+  // 【月複利率換算公式】
+  //   年化報酬率 r → 月複利率 = (1 + r)^(1/12) - 1
+  //   例：年化 7% → 月複利率 ≈ 0.565%（而非 7%/12 = 0.583%，兩者差距在長期複利中有意義）
   //
   // 【月複利率換算公式】
   //   年化報酬率 r → 月複利率 = (1 + r)^(1/12) - 1
   //   例：年化 7% → 月複利率 ≈ 0.565%（而非 7%/12 = 0.583%，兩者差距在長期複利中有意義）
   const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 年化報酬率轉月複利率
 
-  // 決定迴圈起始年月
-  // ・有快照：從快照當月的「下個月」開始（確保銜接點不重複計算）
-  // ・無快照：從 BASE_YEAR 的 1 月開始（全部都是模擬資料）
-  let loopYr, loopMo;
-  if (lastSnap) {
-    const p = String(lastSnap.date).replace(/-/g, '/').split('/');
-    loopYr = +p[0];
-    loopMo = (p[1] ? +p[1] : 1) + 1;      // 快照月 + 1（若快照是 12 月則進位到明年 1 月）
-    if (loopMo > 12) { loopMo = 1; loopYr++; }
-    // 橘線（dsReal）末端即為藍線（dsAccum）起點——同一個 x/y 確保兩線無縫接合
-    dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
-  } else {
-    // 沒有任何歷史快照，從今年 1 月起全部模擬
-    loopYr = Math.max(BASE_YEAR, lastRealYear + 1);
-    loopMo = 1;
-  }
+  // 模擬起點：固定從「今天」出發，確保藍線起點永遠與卡片顯示的淨資產一致
+  // 【為什麼改為從今天而非快照日期？】
+  //   快照可能是數個月前存的舊值（例如 18M），但今天即時市值已是 24M。
+  //   若仍從快照日期起算，藍線起點就是 18M，與頂部卡片數字矛盾，使用者會困惑。
+  //   改為從今天起算後，橘線=歷史快照紀錄，藍線=從今日市值出發的未來模擬，語意清晰。
+  const todayStr  = new Date().toISOString().slice(0, 10);   // YYYY-MM-DD（UTC，台灣時間早上可能是昨天，影響不大）
+  const todayFrac = fracYear(todayStr);
+  const todayP    = todayStr.split('-');
+  let loopYr = +todayP[0];
+  let loopMo = +todayP[1] + 1;   // 今天的「下一個月」開始逐月累積
+  if (loopMo > 12) { loopMo = 1; loopYr++; }
+  // 藍線起點 = 今天 + 當前即時淨資產
+  dsAccum.push({ x: todayFrac, y: Math.round(startNet) });
 
   // simVal：當前模擬資產值，初始值為最新快照淨資產（或 0）
   // fireYear：FIRE 發生年份（null = 尚未達標）
@@ -1496,7 +1494,7 @@ function drawFireChart() {
 
   // outer: 標籤讓內層可用 break outer 提前結束雙層迴圈（本版未使用，但保留以備未來擴充）
   outer: for (let yr = loopYr; yr <= BASE_YEAR + YEARS; yr++) {
-    // 第一年從快照的下一個月開始，後續年份從 1 月開始
+    // 第一年從今天的下一個月開始，後續年份從 1 月開始
     for (let mo = (yr === loopYr ? loopMo : 1); mo <= 12; mo++) {
 
       // ── 每月資產更新 ─────────────────────────────────────────
