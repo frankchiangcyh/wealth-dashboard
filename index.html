@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-ZzGxsDZMXPw+OZG9AK1oZsDfcaJ7c54BnJvCCfXAj1BCWxqRJzzg1z4Js0/ioKvs';
+               script-src 'self' cdn.jsdelivr.net 'sha384-zrkKKqef9lvBOA6Rc/auD2rFOAsUBKRPDZd6UqQ4T5KXRsuRBAFL1/qUpRP9+hL4';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -2445,9 +2445,11 @@ updateClock();
 // 顯示鎖定層：依 isLockEnabled() 決定呈現「設定密碼」或「輸入密碼」畫面
 function showLockScreen() {
   const hasHash = isLockEnabled();
-  document.getElementById('lock-setup') .style.display = hasHash ? 'none'  : 'block';
-  document.getElementById('lock-unlock').style.display = hasHash ? 'block' : 'none';
-  document.getElementById('lock-screen').classList.add('show');
+  const setupEl  = document.getElementById('lock-setup');
+  const unlockEl = document.getElementById('lock-unlock');
+  if (setupEl)  setupEl.style.display  = hasHash ? 'none'  : 'block';
+  if (unlockEl) unlockEl.style.display = hasHash ? 'block' : 'none';
+  document.getElementById('lock-screen')?.classList.add('show');
   document.body.classList.add('locked');
   // 自動 focus 對應輸入框（延遲避免 focus 在 display:none 狀態執行）
   const focusId = hasHash ? 'lock-pw-input' : 'lock-pw1';
@@ -2456,14 +2458,14 @@ function showLockScreen() {
 
 // 隱藏鎖定層，恢復儀表板可見性
 function hideLockScreen() {
-  document.getElementById('lock-screen').classList.remove('show');
+  document.getElementById('lock-screen')?.classList.remove('show');
   document.body.classList.remove('locked');
 }
 
 // 鎖定 App：清除解鎖旗標、停止閒置計時器、顯示鎖定層
 function lockApp() {
   sessionStorage.removeItem(LS.UNLOCKED);
-  stopIdleWatch();
+  typeof stopIdleWatch === 'function' && stopIdleWatch();
   showLockScreen();
 }
 
@@ -2471,38 +2473,43 @@ function lockApp() {
 function unlockApp() {
   sessionStorage.setItem(LS.UNLOCKED, '1');
   hideLockScreen();
-  startIdleWatch();
+  typeof startIdleWatch === 'function' && startIdleWatch();
   init();  // 第二次執行時 isUnlocked()=true，跳過鎖定檢查，繼續完整初始化
 }
 
 // 首次設定密碼：驗證兩次輸入一致 → hash → 存 localStorage → 解鎖
 async function confirmSetPassword() {
-  const pw1 = document.getElementById('lock-pw1').value;
-  const pw2 = document.getElementById('lock-pw2').value;
+  const pw1El = document.getElementById('lock-pw1');
+  const pw2El = document.getElementById('lock-pw2');
+  const pw1 = pw1El.value;
+  const pw2 = pw2El.value;
   const errEl = document.getElementById('lock-setup-error');
 
   // 清除上次錯誤狀態
   errEl.classList.remove('show');
-  document.getElementById('lock-pw1').classList.remove('error');
-  document.getElementById('lock-pw2').classList.remove('error');
+  pw1El.classList.remove('error');
+  pw2El.classList.remove('error');
 
   if (!pw1) {
     errEl.textContent = '請輸入密碼';
     errEl.classList.add('show');
-    document.getElementById('lock-pw1').classList.add('error');
-    document.getElementById('lock-pw1').focus();
+    pw1El.classList.add('error');
+    pw1El.focus();
     return;
   }
   if (pw1 !== pw2) {
     errEl.textContent = '⚠ 兩次輸入不一致，請重新輸入';
     errEl.classList.add('show');
-    document.getElementById('lock-pw1').classList.add('error');
-    document.getElementById('lock-pw2').classList.add('error');
-    document.getElementById('lock-pw2').value = '';
-    document.getElementById('lock-pw2').focus();
+    pw1El.classList.add('error');
+    pw2El.classList.add('error');
+    pw2El.value = '';
+    pw2El.focus();
     return;
   }
   localStorage.setItem(LS.LOCK_HASH, await hashPassword(pw1));
+  // 清除明文密碼，避免殘留在 DOM
+  pw1El.value = '';
+  pw2El.value = '';
   unlockApp();
 }
 
