@@ -353,6 +353,46 @@ async function runIntegrationTests() {
 }
 
 // ──────────────────────────────────────────────────────────
+//  Section 5：lockScreen 單元測試
+//  hashPassword / isLockEnabled / isUnlocked 定義於 index.html 全域
+// ──────────────────────────────────────────────────────────
+async function testLockScreen() {
+  // 5.1 hashPassword 回傳 64 位 hex string
+  const h1 = await hashPassword('abc');
+  assert('hashPassword: 長度為 64', h1.length, 64);
+  assert('hashPassword: 全為 hex 字元', /^[0-9a-f]{64}$/.test(h1), true);
+
+  // 5.2 相同輸入產生相同 hash
+  const h2 = await hashPassword('abc');
+  assert('hashPassword: 相同輸入相同 hash', h1, h2);
+
+  // 5.3 不同輸入產生不同 hash
+  const h3 = await hashPassword('xyz');
+  assert('hashPassword: 不同輸入不同 hash', h1 !== h3, true);
+
+  // 5.4 空字串也能 hash
+  const h4 = await hashPassword('');
+  assert('hashPassword: 空字串長度為 64', h4.length, 64);
+  assert('hashPassword: 空字串與非空不同', h4 !== h1, true);
+
+  // 5.5 isLockEnabled：localStorage 有 wd_lock_hash 時回傳 true
+  const origHash = localStorage.getItem(LS.LOCK_HASH);
+  localStorage.setItem(LS.LOCK_HASH, 'test');
+  assert('isLockEnabled: 有 hash 回傳 true', isLockEnabled(), true);
+  localStorage.removeItem(LS.LOCK_HASH);
+  assert('isLockEnabled: 無 hash 回傳 false', isLockEnabled(), false);
+  if (origHash) localStorage.setItem(LS.LOCK_HASH, origHash);
+
+  // 5.6 isUnlocked：sessionStorage 有 wd_unlocked='1' 時回傳 true
+  const origUnlocked = sessionStorage.getItem(LS.UNLOCKED);
+  sessionStorage.setItem(LS.UNLOCKED, '1');
+  assert('isUnlocked: 值為 "1" 回傳 true', isUnlocked(), true);
+  sessionStorage.removeItem(LS.UNLOCKED);
+  assert('isUnlocked: 無值回傳 false', isUnlocked(), false);
+  if (origUnlocked) sessionStorage.setItem(LS.UNLOCKED, origUnlocked);
+}
+
+// ──────────────────────────────────────────────────────────
 //  主要入口：window._runChecks()
 // ──────────────────────────────────────────────────────────
 
@@ -369,6 +409,7 @@ window._runChecks = async function() {
   try { testSafeNum();      } catch(e) { results.push({ name:'testSafeNum（例外）', ok:false, message:e.message }); }
   try { testFracYear();     } catch(e) { results.push({ name:'testFracYear（例外）', ok:false, message:e.message }); }
   try { testParseStooqCSV();} catch(e) { results.push({ name:'testParseStooqCSV（例外）', ok:false, message:e.message }); }
+  try { await testLockScreen(); } catch(e) { results.push({ name:'testLockScreen（例外）', ok:false, message:e.message }); }
 
   const unitPass = results.filter(r => r.ok).length;
   const unitFail = results.filter(r => !r.ok).length;

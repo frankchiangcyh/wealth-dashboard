@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-xQj8ftZmQRGdGYXpLj+PmVL82lLt9Q3BWRKBOWaKxs2bsfnegoqsj3cyOQQI2xX4';
+               script-src 'self' cdn.jsdelivr.net 'sha384-ZfAmhGIP2dDXq60R3o95ESKfdgSWaEwTiGFnfP92Su8lpo4+X+O9ST1e49+mrP81';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -491,8 +491,27 @@ const LS = {
   PKCE:      'wd_pkce',           // localStorage:    PKCE 驗證用的 code_verifier（暫存）
   SECRET:    'wd_client_secret',  // sessionStorage:  OAuth 用戶端密鑰（關分頁即清除，降低竊取風險）
   CLIENT_ID: 'wd_client_id',      // localStorage:    Google OAuth Client ID（執行期輸入，不寫死在程式碼）
-  SHEET_ID:  'wd_sheet_id'        // localStorage:    Google Sheets 試算表 ID（執行期輸入，不寫死在程式碼）
+  SHEET_ID:  'wd_sheet_id',       // localStorage:    Google Sheets 試算表 ID（執行期輸入，不寫死在程式碼）
+  LOCK_HASH: 'wd_lock_hash',      // localStorage:    SHA-256 密碼雜湊（跨 session 持久）
+  UNLOCKED:  'wd_unlocked'        // sessionStorage:  解鎖旗標（關分頁即清除）
 };
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    鎖定畫面 — 純函式                      ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// SHA-256 密碼雜湊（async，使用瀏覽器內建 SubtleCrypto，不需任何 CDN）
+// 回傳 64 位元組 lowercase hex string
+async function hashPassword(pwd) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pwd));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// 是否已設定密碼（localStorage 有 wd_lock_hash）
+function isLockEnabled() { return !!localStorage.getItem(LS.LOCK_HASH); }
+
+// 本次 session 是否已解鎖（sessionStorage 有 wd_unlocked='1'）
+function isUnlocked()    { return sessionStorage.getItem(LS.UNLOCKED) === '1'; }
 
 // 報價自動刷新間隔：每 5 分鐘更新一次
 const QUOTE_REFRESH_MS = 5 * 60 * 1000;
