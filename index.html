@@ -1,0 +1,2436 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Content Security Policy：限制可執行的腳本來源與連線對象，防止 XSS 攻擊 -->
+<!-- 注意：frame-ancestors 只在 HTTP header 有效，此處 meta 僅供文件化參考 -->
+<!-- ⚠ 每次修改 JS 區塊後需重新計算 script hash 並更新下方 sha384 值 -->
+<!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' cdn.jsdelivr.net 'sha384-5X0va1+UCD+wy98WQsnkhSAzlgN7usGiMI3mAEFEGfFO9Ppow/GKorxmoWWXisos';
+               style-src 'self' 'unsafe-inline';
+               connect-src https://query1.finance.yahoo.com
+                           https://query2.finance.yahoo.com
+                           https://stooq.com
+                           https://corsproxy.io
+                           https://open.er-api.com
+                           https://oauth2.googleapis.com
+                           https://sheets.googleapis.com
+                           https://accounts.google.com;
+               img-src 'self' data:;
+               font-src 'self';">
+<title>資產戰情室</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+        integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"
+        integrity="sha384-3N9GHhCtN3CQef6tNfqgZlv7sQLYIkcChN+uaTZ7xVdzKYp/SjBNPxa92+hM7EAY"
+        crossorigin="anonymous"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:#0d1117; color:#e6edf3;
+  font-family:'Segoe UI',system-ui,sans-serif;
+  min-height:100vh; padding:20px;
+}
+.header {
+  display:flex; justify-content:space-between; align-items:center;
+  margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid #21262d;
+  flex-wrap:wrap; gap:10px;
+}
+.header h1 { font-size:28px; font-weight:600; color:#58a6ff; letter-spacing:2px; }
+.header-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+
+/* Google connect button */
+.btn-google {
+  display:flex; align-items:center; gap:6px;
+  padding:8px 16px; border-radius:6px; font-size:15px; font-weight:600;
+  cursor:pointer; border:1px solid; transition:all 0.2s; white-space:nowrap;
+}
+.btn-google.disconnected { background:#21262d; border-color:#30363d; color:#8b949e; }
+.btn-google.disconnected:hover { border-color:#58a6ff; color:#58a6ff; }
+.btn-google.connected    { background:#1a3a1a; border-color:#3fb950; color:#3fb950; }
+.btn-google.connected:hover { background:#2a1215; border-color:#f85149; color:#f85149; }
+.btn-google.loading      { background:#21262d; border-color:#d29922; color:#d29922; cursor:wait; }
+.timestamp { font-size:15px; color:#8b949e; }
+.quote-status { font-size:15px; color:#8b949e; display:flex; align-items:center; gap:5px; }
+.live-dot {
+  display:inline-block; width:8px; height:8px; background:#3fb950;
+  border-radius:50%; flex-shrink:0;
+}
+.live-dot.loading  { background:#d29922; animation:pulse 1s infinite; }
+.live-dot.error    { background:#f85149; }
+.live-dot.ok       { background:#3fb950; animation:pulse 3s infinite; }
+.live-dot.cached   { background:#d29922; }
+.live-dot.partial  { background:#d29922; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.grid-top { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-bottom:16px; }
+.grid-bot { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+.chart-full { margin-bottom:16px; }
+
+.card { background:#161b22; border:1px solid #21262d; border-radius:12px; padding:24px; }
+.card-title { font-size:16px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; }
+.card-value { font-size:42px; font-weight:700; color:#e6edf3; line-height:1; }
+.card-sub { font-size:16px; color:#8b949e; margin-top:8px; }
+.card-value.green { color:#3fb950; }
+.card-value.blue  { color:#58a6ff; }
+.card-value.red   { color:#f85149; }
+
+.progress-wrap { margin-top:12px; }
+.progress-label { display:flex; justify-content:space-between; font-size:15px; color:#8b949e; margin-bottom:6px; }
+.progress-bar { height:8px; background:#21262d; border-radius:4px; overflow:hidden; }
+.progress-fill { height:100%; border-radius:4px; transition:width 0.8s ease; }
+
+.fire-badge {
+  display:inline-flex; align-items:center; gap:4px;
+  background:#1a3a1a; border:1px solid #3fb950; color:#3fb950;
+  font-size:15px; padding:5px 14px; border-radius:20px; margin-top:10px;
+}
+
+/* Asset table */
+.asset-table { width:100%; border-collapse:collapse; }
+.asset-table th { text-align:left; font-size:15px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; padding:10px 0; border-bottom:1px solid #21262d; }
+.asset-table td { padding:10px 0; font-size:17px; border-bottom:1px solid #21262d; vertical-align:middle; }
+.asset-table tr:last-child td { border-bottom:none; }
+.ticker { font-weight:600; color:#58a6ff; }
+.price-up   { color:#3fb950; }
+.price-down { color:#f85149; }
+.price-neu  { color:#8b949e; }
+.text-right { text-align:right; }
+
+/* Donut */
+.donut-wrap { position:relative; max-width:190px; margin:0 auto; }
+.donut-center { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; }
+.donut-center .val { font-size:20px; font-weight:700; color:#e6edf3; }
+.donut-center .lbl { font-size:13px; color:#8b949e; }
+.legend { margin-top:12px; }
+.legend-item { display:flex; align-items:center; justify-content:space-between; padding:4px 0; font-size:16px; }
+.legend-dot { width:9px; height:9px; border-radius:50%; margin-right:7px; flex-shrink:0; }
+.legend-name { display:flex; align-items:center; color:#8b949e; }
+.legend-pct { color:#e6edf3; font-weight:600; }
+
+/* Chart */
+.chart-outer    { position:relative; }          /* overlay canvas 的定位基準 */
+.chart-container { position:relative; height:560px; overflow-x:auto; overflow-y:hidden; }
+.chart-container::-webkit-scrollbar { height:6px; }
+.chart-container::-webkit-scrollbar-track { background:#0d1117; }
+.chart-container::-webkit-scrollbar-thumb { background:#30363d; border-radius:3px; }
+.chart-container::-webkit-scrollbar-thumb:hover { background:#58a6ff; }
+/* 凍結 Y 軸 overlay：絕對定位在 chart-outer 左上角，不進入捲動流 */
+#yAxisOverlay   { position:absolute; top:0; left:0; z-index:5; pointer-events:none; }
+
+/* Sliders */
+.slider-grid {
+  display:grid; grid-template-columns:1fr 1fr; gap:10px 24px;
+  margin-top:14px; padding-top:14px; border-top:1px solid #21262d;
+}
+.slider-row { display:flex; align-items:center; gap:8px; }
+.slider-row label { font-size:15px; color:#8b949e; white-space:nowrap; min-width:160px; }
+.slider-row input[type=range] { flex:1; accent-color:#58a6ff; cursor:pointer; height:6px; }
+.slider-val {
+  min-width:60px; text-align:center; background:#0d1117;
+  border:1px solid #30363d; border-radius:5px; padding:4px 6px;
+  font-size:15px; color:#e6edf3;
+}
+
+/* Snapshot */
+.snapshot-list { margin-top:4px; }
+.snapshot-item {
+  display:flex; align-items:center; justify-content:space-between;
+  background:#0d1117; border:1px solid #21262d; border-radius:8px;
+  padding:8px 10px; margin-bottom:5px; font-size:14px;
+}
+.snap-date { color:#8b949e; font-size:15px; margin-bottom:2px; }
+.snap-val  { color:#58a6ff; font-weight:600; font-size:17px; }
+.snap-del  { background:none; border:none; color:#f85149; cursor:pointer; font-size:15px; padding:0 3px; opacity:0.6; transition:opacity 0.2s; }
+.snap-del:hover { opacity:1; }
+
+.input-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.input-group label { font-size:15px; color:#8b949e; display:block; margin-bottom:4px; }
+.input-group input {
+  width:100%; background:#0d1117; border:1px solid #30363d;
+  border-radius:6px; padding:10px 12px; color:#e6edf3; font-size:16px; outline:none; transition:border-color 0.2s;
+}
+.input-group input:focus { border-color:#58a6ff; }
+
+.btn-row { display:flex; gap:8px; margin-top:12px; }
+.btn-save { flex:1; padding:12px; background:#1f6feb; color:#fff; border:none; border-radius:8px; font-size:17px; font-weight:600; cursor:pointer; transition:background 0.2s; }
+.btn-save:hover { background:#388bfd; }
+.btn-add-field { padding:10px 14px; background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:8px; font-size:15px; cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+.btn-add-field:hover { color:#e6edf3; border-color:#8b949e; }
+
+.custom-asset-row { display:flex; gap:8px; align-items:flex-end; margin-top:8px; }
+.custom-asset-row .input-group { flex:1; margin:0; }
+.btn-remove-row { background:none; border:1px solid #30363d; color:#f85149; border-radius:6px; padding:7px 9px; cursor:pointer; font-size:13px; transition:all 0.2s; }
+.btn-remove-row:hover { background:#2a1215; border-color:#f85149; }
+
+.section-label { font-size:13px; color:#30363d; text-transform:uppercase; letter-spacing:1px; margin:12px 0 6px; }
+
+/* Alert banner */
+.alert-banner {
+  display:none; background:#2a1f0e; border:1px solid #d29922;
+  color:#d29922; font-size:12px; padding:8px 14px; border-radius:8px;
+  margin-bottom:12px;
+}
+.alert-banner.show { display:block; }
+
+/* Secret setup modal */
+.modal-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75);
+  z-index:1000; align-items:center; justify-content:center;
+}
+.modal-overlay.show { display:flex; }
+.modal-box {
+  background:#161b22; border:1px solid #30363d; border-radius:14px;
+  padding:28px 32px; max-width:480px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.6);
+}
+.modal-box h3 { font-size:17px; color:#e6edf3; margin-bottom:8px; }
+.modal-box p  { font-size:14px; color:#8b949e; margin-bottom:16px; line-height:1.6; }
+.modal-input {
+  width:100%; background:#0d1117; border:1px solid #30363d; border-radius:8px;
+  padding:11px 14px; color:#e6edf3; font-size:15px; outline:none;
+  font-family:monospace; transition:border-color 0.2s; margin-bottom:16px;
+}
+.modal-input:focus { border-color:#58a6ff; }
+.modal-btns { display:flex; gap:10px; justify-content:flex-end; }
+.modal-btn-ok {
+  padding:9px 22px; background:#1f6feb; color:#fff; border:none;
+  border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;
+}
+.modal-btn-ok:hover { background:#388bfd; }
+.modal-btn-cancel {
+  padding:9px 16px; background:none; color:#8b949e;
+  border:1px solid #30363d; border-radius:8px; font-size:15px; cursor:pointer;
+}
+.modal-btn-cancel:hover { color:#e6edf3; border-color:#8b949e; }
+.modal-label { display:block; font-size:12px; color:#8b949e; margin-bottom:5px; }
+
+@media(max-width:1100px){
+  .grid-top{grid-template-columns:1fr 1fr;}
+}
+@media(max-width:700px){
+  .grid-top{grid-template-columns:1fr;}
+  .grid-bot{grid-template-columns:1fr;}
+  .slider-grid{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ 資產戰情室</h1>
+  <div class="header-right">
+    <button class="btn-google disconnected" id="btn-google">
+      🔗 連結 Google
+    </button>
+    <div class="quote-status">
+      <span class="live-dot loading" id="quote-dot"></span>
+      <span id="quote-status-text">報價載入中…</span>
+    </div>
+    <div class="timestamp" id="clock"></div>
+  </div>
+</div>
+
+<div class="alert-banner" id="alert-banner"></div>
+
+<!-- Secret setup modal -->
+<div class="modal-overlay" id="secret-modal">
+  <div class="modal-box">
+    <h3>🔑 設定 OAuth 用戶端密鑰</h3>
+    <p>請輸入 Google Cloud Console 的 <strong style="color:#e6edf3">用戶端密鑰（CLIENT_SECRET）</strong>。<br>
+    格式：<code style="color:#d29922">GOCSPX-...</code><br><br>
+    此值存於 <strong style="color:#e6edf3">sessionStorage</strong>（分頁關閉即自動清除），<br>
+    不會寫入 localStorage、原始碼或 GitHub。<br>
+    <span style="color:#8b949e;font-size:12px;">⚠ 每次重新開啟分頁後，需再次輸入才能同步 Google Sheets。</span></p>
+    <input class="modal-input" id="secret-input" type="password" placeholder="GOCSPX-...">
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" id="secret-cancel">取消</button>
+      <button class="modal-btn-ok" id="secret-confirm">確認連結 Google</button>
+    </div>
+  </div>
+</div>
+
+<!-- Google 設定 Modal：首次使用時輸入 CLIENT_ID 和 SHEET_ID -->
+<!-- 這兩個值存入 localStorage（不是憑證，跨 session 持久）；不寫死在程式碼中 -->
+<div class="modal-overlay" id="config-modal">
+  <div class="modal-box" style="max-width:520px;">
+    <h3>⚙ 設定 Google 連結資訊</h3>
+    <p>請貼上 Google Cloud Console 的兩個 ID。<br>
+    這兩個值將存入 <strong style="color:#e6edf3">localStorage</strong>，不會出現在原始碼或 GitHub。</p>
+    <label class="modal-label">OAuth 用戶端 ID（CLIENT_ID）</label>
+    <input class="modal-input" id="config-client-id" type="text"
+           placeholder="xxxxxxx.apps.googleusercontent.com" autocomplete="off">
+    <label class="modal-label">Sheets 試算表 ID（SHEET_ID）</label>
+    <input class="modal-input" id="config-sheet-id" type="text"
+           placeholder="網址列 /d/ 後面的長串，例：1AbCdEf..." autocomplete="off">
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" id="config-cancel">取消</button>
+      <button class="modal-btn-ok"     id="config-confirm">儲存並繼續</button>
+    </div>
+  </div>
+</div>
+
+<!-- 報價錯誤 Modal：任何符號在全部 3 層來源均失敗時顯示 -->
+<!-- 行為：不可點背景關閉、不自動消失、重複失敗時更新內容而非疊加 -->
+<div class="modal-overlay" id="quote-error-modal">
+  <div class="modal-box" style="border-color:#d29922;max-width:440px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3 style="margin:0;">⚠ 部分報價無法取得</h3>
+      <button class="modal-btn-cancel" id="quote-error-close-x" style="padding:2px 8px;font-size:16px;line-height:1;">✕</button>
+    </div>
+    <p>以下標的在所有來源（Yahoo Finance、Stooq、Open ER）均取得失敗：</p>
+    <ul id="quote-error-list" style="color:#f85149;margin:0 0 10px 0;padding-left:20px;line-height:1.8;"></ul>
+    <p id="quote-error-cache-note" style="font-size:13px;color:#8b949e;margin:0 0 16px 0;"></p>
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" id="quote-error-close">✕ 關閉</button>
+      <button class="modal-btn-ok"     id="quote-error-retry">🔄 重新嘗試</button>
+    </div>
+  </div>
+</div>
+
+<!-- Row 1: 核心指標 (2欄) -->
+<div class="grid-top">
+  <div class="card">
+    <div class="card-title">當前淨資產</div>
+    <div class="card-value blue" id="display-net">NT$ —</div>
+    <div class="card-sub" id="display-diff">—</div>
+    <div class="fire-badge" id="display-progress">🎯 計算中…</div>
+    <div class="progress-wrap">
+      <div class="progress-label"><span>0</span><span id="display-target-label">3,000 萬</span></div>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill-net" style="background:linear-gradient(90deg,#1f6feb,#58a6ff);width:0%"></div></div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:24px">
+      <div>
+        <div class="card-title">房貸餘額</div>
+        <div style="font-size:22px;font-weight:700;color:#f85149" id="display-mortgage">—</div>
+        <div class="card-sub" id="display-months">—</div>
+      </div>
+      <div>
+        <div class="card-title">現金</div>
+        <div style="font-size:22px;font-weight:700;color:#d29922" id="display-cash">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">4% 法則安全提領額</div>
+    <div class="card-value green" id="display-fire-monthly">NT$ — / 月</div>
+    <div class="card-sub" id="display-fire-annual">年化提領：—</div>
+    <div class="card-sub" style="margin-top:10px">目標月提領：<span style="color:#d29922">NT$ 100,000</span></div>
+    <div class="progress-wrap" style="margin-top:8px">
+      <div class="progress-label"><span>目前</span><span>目標 10萬/月</span></div>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill-fire" style="background:linear-gradient(90deg,#1a7f37,#3fb950);width:0%"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">資產配置比例</div>
+    <div class="donut-wrap">
+      <canvas id="donutChart" height="190"></canvas>
+      <div class="donut-center">
+        <div class="val" id="donut-center-val">—</div>
+        <div class="lbl">總淨值</div>
+      </div>
+    </div>
+    <div class="legend" id="donutLegend"></div>
+  </div>
+</div>
+
+<!-- Row 2: 退休模擬圖（全寬） -->
+<div class="card chart-full">
+  <div class="card-title">退休資產模擬 — 實際快照 &amp; 未來模擬</div>
+  <div class="chart-outer">
+    <canvas id="yAxisOverlay"></canvas>
+    <div class="chart-container"><canvas id="fireChart"></canvas></div>
+  </div>
+  <div class="slider-grid">
+    <div class="slider-row">
+      <label>每月投入 (TWD)</label>
+      <input type="range" id="sl-monthly" min="10000" max="200000" step="5000" value="70000">
+      <div class="slider-val" id="sv-monthly">70,000</div>
+    </div>
+    <div class="slider-row">
+      <label>預期年化報酬率 (%)</label>
+      <input type="range" id="sl-return" min="1" max="15" step="0.5" value="7">
+      <div class="slider-val" id="sv-return">7</div>
+    </div>
+    <div class="slider-row">
+      <label>退休提領率 (%)</label>
+      <input type="range" id="sl-withdraw" min="1" max="8" step="0.5" value="4">
+      <div class="slider-val" id="sv-withdraw">4</div>
+    </div>
+    <div class="slider-row">
+      <label>目標資產 (萬 TWD)</label>
+      <input type="range" id="sl-target" min="1000" max="100000" step="1000" value="3000">
+      <div class="slider-val" id="sv-target">3,000</div>
+    </div>
+  </div>
+  <!-- 歷史報酬參考面板：fetchHistoricalReturns() 成功後自動顯示 -->
+  <div id="return-ref-panel" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid #21262d;">
+    <div style="font-size:12px; color:#6e7681; margin-bottom:6px;">
+      📊 歷史年化報酬參考（Yahoo Finance 實際數據，<span style="color:#d29922">過去不代表未來</span>）
+    </div>
+    <div id="return-ref-content" style="font-size:13px; line-height:2;"></div>
+  </div>
+</div>
+
+<!-- Row 3: 報價 + 持倉輸入 -->
+<div class="grid-bot">
+  <div class="card">
+    <div class="card-title">即時報價 &amp; 持股明細</div>
+    <table class="asset-table">
+      <thead>
+        <tr><th>標的</th><th>現價</th><th>持股數</th><th class="text-right">市值（TWD）</th></tr>
+      </thead>
+      <tbody id="quoteTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">更新持倉快照</div>
+
+    <div class="section-label">美股</div>
+    <div class="input-grid">
+      <div class="input-group">
+        <label>VT（股）</label>
+        <input type="number" id="f-vt" value="0" min="0">
+      </div>
+      <div class="input-group">
+        <label>BND（股）</label>
+        <input type="number" id="f-bnd" value="0" min="0">
+      </div>
+    </div>
+
+    <div class="section-label">台股</div>
+    <div class="input-grid">
+      <div class="input-group">
+        <label>0050（股）</label>
+        <input type="number" id="f-tw0050" value="0" min="0">
+      </div>
+      <div class="input-group">
+        <label>006208（股）</label>
+        <input type="number" id="f-tw006208" value="0" min="0">
+      </div>
+      <div class="input-group">
+        <label>友達 2409（股）</label>
+        <input type="number" id="f-auo" value="0" min="0">
+      </div>
+    </div>
+
+    <div class="section-label">現金 &amp; 負債</div>
+    <div class="input-grid">
+      <div class="input-group">
+        <label>現金（TWD）</label>
+        <input type="number" id="f-cash" value="0" min="0">
+      </div>
+      <div class="input-group">
+        <label>房貸餘額（TWD）</label>
+        <input type="number" id="f-mortgage" value="0" min="0">
+      </div>
+      <div class="input-group">
+        <label>房貸剩餘期數</label>
+        <input type="number" id="f-months" value="0" min="0">
+      </div>
+    </div>
+
+    <div id="customFields"></div>
+
+    <div class="btn-row">
+      <button class="btn-save" id="btn-save-snapshot">💾 新增快照</button>
+      <button class="btn-add-field" id="btn-add-field">＋ 自訂欄位</button>
+    </div>
+  </div>
+</div>
+
+<!-- 歷史快照列表 -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-title">歷史持倉快照紀錄</div>
+  <div id="snapshotList" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+</div>
+
+<script>
+// ╔══════════════════════════════════════════════════════════╗
+// ║              資產戰情室 — 主要設定區                      ║
+// ║  修改這裡的值來對應你自己的 Google Cloud 專案             ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 試算表內工作表名稱（預設 snapshots，不用改）
+const SHEET_NAME = 'snapshots';
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    系統常數區                             ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 股票代號對應表：Yahoo Finance symbol → 內部 key、顯示名稱、幣別
+const TICKER_MAP = {
+  'VT':        { key:'vt',       label:'VT',        cur:'USD' },
+  'BND':       { key:'bnd',      label:'BND',       cur:'USD' },
+  '0050.TW':   { key:'tw0050',   label:'0050.TW',   cur:'TWD' },
+  '006208.TW': { key:'tw006208', label:'006208.TW', cur:'TWD' },
+  '2409.TW':   { key:'auo',      label:'友達 2409',  cur:'TWD' },
+  'TWD=X':     { key:'usdtwd',   label:'USD/TWD',   cur:'rate' }  // USD/TWD 匯率
+};
+
+// 持倉輸入欄位對應的 key 清單（用來批次讀取/寫入）
+const HOLDINGS_KEYS = ['vt','bnd','tw0050','tw006208','auo','cash','mortgage','months'];
+
+// localStorage / sessionStorage 的 key 名稱集中管理，避免拼錯字
+// 【安全設計】access_token / CLIENT_SECRET → sessionStorage（關分頁即清除）
+//             refresh_token / CLIENT_ID / SHEET_ID → localStorage（跨 session 持久）
+//             CLIENT_ID 和 SHEET_ID 本身不是憑證，存 localStorage 可接受；
+//             不寫死在原始碼中，是為了讓 Repo 公開後不洩漏對應的 Google 資源資訊。
+const LS = {
+  HOLDINGS:  'wd_holdings',       // localStorage:    持倉數量（股數、現金、房貸）
+  SNAPS:     'wd_snapshots',      // localStorage:    歷史快照列表
+  PRICES:    'wd_prices',         // localStorage:    報價快取（離線時使用）
+  TOKENS:    'wd_tokens',         // sessionStorage:  access_token（關閉分頁自動清除）
+  REFRESH:   'wd_refresh_token',  // localStorage:    refresh_token（持久，供自動換 token）
+  PKCE:      'wd_pkce',           // localStorage:    PKCE 驗證用的 code_verifier（暫存）
+  SECRET:    'wd_client_secret',  // sessionStorage:  OAuth 用戶端密鑰（關分頁即清除，降低竊取風險）
+  CLIENT_ID: 'wd_client_id',      // localStorage:    Google OAuth Client ID（執行期輸入，不寫死在程式碼）
+  SHEET_ID:  'wd_sheet_id'        // localStorage:    Google Sheets 試算表 ID（執行期輸入，不寫死在程式碼）
+};
+
+// 報價自動刷新間隔：每 5 分鐘更新一次
+const QUOTE_REFRESH_MS = 5 * 60 * 1000;
+
+// OAuth 登入後跳回的網址（自動偵測環境）
+// - GitHub Pages：固定使用部署網址
+// - 本機開發：使用當前網址（http://localhost:xxxx/...）
+const REDIRECT_URI = window.location.hostname.includes('github.io')
+  ? 'https://frankchiangcyh.github.io/wealth-dashboard/'
+  : window.location.origin + window.location.pathname;
+
+// ── Google 設定 getter 函式 ──────────────────────────────────
+// CLIENT_ID 和 SHEET_ID 改為執行期從 localStorage 讀取，不再寫死於原始碼，
+// 避免公開 Repo 洩漏使用者的 Google Cloud 資源資訊。
+
+// 讀取 Google OAuth Client ID（格式：xxxxxxx.apps.googleusercontent.com）
+function getClientId()  { return localStorage.getItem(LS.CLIENT_ID) || ''; }
+
+// 讀取 Google Sheets 試算表 ID（網址列 /d/ 後面的長串）
+function getSheetId()   { return localStorage.getItem(LS.SHEET_ID)  || ''; }
+
+// 動態組合 Sheets API 基底 URL（因 SHEET_ID 可能在頁面載入後才輸入）
+function getSheetsApi() {
+  return `https://sheets.googleapis.com/v4/spreadsheets/${getSheetId()}`;
+}
+
+// 圓餅圖各資產的顏色（背景色 / 邊框色）
+const DONUT_COLORS  = ['#1f6feb','#1a3f8f','#1a7f37','#9e6a03','#a3460f','#6e40c9'];
+const DONUT_BORDERS = ['#58a6ff','#4080df','#3fb950','#d29922','#f0883e','#8957e5'];
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    全域狀態變數                           ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 各標的最新價格（預設值：美元報價 0，USD/TWD 預設 32）
+let prices  = { vt:0, bnd:0, tw0050:0, tw006208:0, auo:0, usdtwd:32 };
+
+// 各標的今日漲跌資訊（change: 漲跌金額, pct: 漲跌百分比）
+let changes = { vt:null, bnd:null, tw0050:null, tw006208:null, auo:null };
+
+// 歷史快照陣列（從 localStorage 或 Google Sheets 讀入）
+let snapshots = [];
+
+// 報價是否已就緒（false 時不計算市值，避免顯示錯誤數字）
+let pricesReady = false;
+
+// Chart.js 圖表實例（null 表示尚未建立）
+let donutChart = null;  // 資產配置圓餅圖
+let fireChart  = null;  // 退休模擬折線圖
+
+// 各標的歷史年化報酬快取（fetchHistoricalReturns 抓到後存這裡，供持倉更新時重算加權）
+let returnRefData = null;
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    工具函式                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 數字格式化：加千分位（例：1234567 → "1,234,567"）
+function fmt(n)  { return Math.round(n).toLocaleString(); }
+
+// 格式化為百萬（例：3000000 → "3.00M"）
+function fmtM(n) { return (n/1e6).toFixed(2) + 'M'; }
+
+// 格式化為萬（例：300000 → "30萬"）
+function fmtW(n) { return (n/1e4).toFixed(0) + '萬'; }
+
+// 帶逾時的 fetch：超過 ms 毫秒自動取消，避免卡住
+async function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(id);
+    return res;
+  } catch(e) { clearTimeout(id); throw e; }
+}
+
+// 顯示頁面頂部黃色警告橫幅
+function showAlert(msg) {
+  const el = document.getElementById('alert-banner');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+// 隱藏警告橫幅
+function hideAlert() {
+  document.getElementById('alert-banner').classList.remove('show');
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                  輸入驗證工具函式                          ║
+// ║  防止 NaN、Infinity、超大值、惡意字串進入計算或存入 Sheets  ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 安全數值轉換
+// - 非數字、NaN、Infinity 一律回傳 0
+// - 強制限制在 [min, max] 範圍內，防止極端值污染計算
+function safeNum(val, min = 0, max = 1e10) {
+  const n = Number(val);
+  if (!isFinite(n) || isNaN(n)) return 0;
+  return Math.max(min, Math.min(max, n));
+}
+
+// 安全日期字串驗證
+// - 只允許嚴格的 YYYY-MM-DD 格式（10 碼）
+// - 不符合格式的字串一律回傳 ''，防止 XSS payload 混入快照列表
+function safeDate(val) {
+  const s = String(val ?? '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                  報價狀態指示燈                           ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 更新右上角報價狀態燈號與文字
+// state: 'loading'（載入中）| 'ok'（全部成功）| 'partial'（部分快取，modal 已通知）
+//        | 'cached'（舊式整體快取）| 'error'（全部失敗無快取）
+function setQuoteStatus(state, detail = '') {
+  const dot = document.getElementById('quote-dot');
+  const txt = document.getElementById('quote-status-text');
+  dot.className = 'live-dot ' + state;
+  if (state === 'loading') {
+    txt.textContent = '報價載入中…';
+  } else if (state === 'ok') {
+    txt.textContent = new Date().toLocaleTimeString('zh-TW') + ' 更新';
+    hideAlert();
+  } else if (state === 'partial') {
+    // 部分符號失敗，用快取補齊；Modal 已彈出通知，此處只更新燈號
+    txt.textContent = `部分快取（${detail}）`;
+  } else if (state === 'cached') {
+    txt.textContent = '快取報價（' + detail + '）';
+    showAlert('⚠ 無法取得即時報價，顯示上次快取數值（' + detail + '）。請確認網路連線。');
+  } else {
+    txt.textContent = '報價載入失敗';
+    showAlert('⚠ 報價載入失敗，市值計算使用預設估計值。請重新整理頁面再試。');
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    報價快取                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 將最新報價存入 localStorage，供離線或 API 失敗時使用
+function savePricesCache() {
+  localStorage.setItem(LS.PRICES, JSON.stringify({
+    prices:  { ...prices },
+    changes: { ...changes },
+    time:    new Date().toLocaleTimeString('zh-TW')
+  }));
+}
+
+// 從 localStorage 讀取上次快取的報價，失敗回傳 null
+function loadPricesCache() {
+  try {
+    const raw = localStorage.getItem(LS.PRICES);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║              Yahoo Finance 報價抓取                       ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// CORS Proxy 清單
+// 【診斷結論（2025-05）】
+//   ・allorigins.win → 對 Yahoo Finance 全部逾時（AbortError），已移除
+//   ・corsproxy.io   → v7 API 回傳 401（Yahoo 現在需要 Crumb 認證）
+//                      v8 range=1d 回傳 gzip binary → JSON parse 失敗
+//                      v8 range=5d 以上 → JSON 明文，可正常解析 ✓
+//                      Stooq CSV 透過 corsproxy 可正常取得
+// 結論：只保留 corsproxy.io，並使用 v8 + range=5d；Yahoo 失敗時切換 Stooq
+const CORS_WRAPS = [
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+];
+
+// ── Layer 2 備援：Stooq.com 符號對照表 ──
+// Yahoo Finance symbol → Stooq symbol（格式：{ticker}.{exchange}）
+// 注意：TWD=X（匯率）Stooq 不支援，由 Layer 3 的 Open ER API 處理
+const STOOQ_MAP = {
+  'VT':        'vt.us',
+  'BND':       'bnd.us',
+  '0050.TW':   '0050.tw',
+  '006208.TW': '006208.tw',
+  '2409.TW':   '2409.tw'
+};
+
+// 嘗試用每個 proxy 抓取同一個 URL，成功即回傳 JSON，全部失敗回傳 null
+// 【gzip 自動解壓】
+//   Yahoo Finance 經 CORS proxy 後常回傳 gzip 壓縮 binary（corsproxy 不解壓），
+//   瀏覽器收到的是壓縮位元組而非明文 JSON → res.json() 直接炸裂。
+//   解法：用 arrayBuffer 取原始位元組，偵測 gzip magic number (0x1f, 0x8b)，
+//   若是 gzip 則用瀏覽器原生 DecompressionStream 解壓後再 JSON.parse。
+async function tryFetch(url, ms = 9000) {
+  for (const wrap of CORS_WRAPS) {
+    const proxyUrl   = wrap(url);
+    const proxyLabel = proxyUrl.includes('corsproxy') ? 'corsproxy' : 'proxy';
+    try {
+      const res = await fetchWithTimeout(proxyUrl, ms);
+      if (!res.ok) {
+        console.warn(`[quotes] ${proxyLabel} HTTP ${res.status} for ${url.slice(0,80)}`);
+        continue;
+      }
+
+      // 取原始位元組，避免瀏覽器或 proxy 自動處理出問題
+      const buf   = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let text;
+
+      // 偵測 gzip 檔頭（0x1f, 0x8b 為 gzip magic number）
+      if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        // 用瀏覽器原生 DecompressionStream 解 gzip（Chrome 80+/FF 113+/Safari 16.4+ 支援）
+        try {
+          const stream = new Response(buf).body.pipeThrough(new DecompressionStream('gzip'));
+          text = await new Response(stream).text();
+          console.info(`[quotes] ${proxyLabel} 偵測到 gzip，已解壓 ✓`);
+        } catch(de) {
+          console.warn(`[quotes] ${proxyLabel} gzip 解壓失敗: ${de.message}`);
+          continue;
+        }
+      } else {
+        // 非壓縮：用 UTF-8 解碼
+        text = new TextDecoder('utf-8').decode(buf);
+      }
+
+      const json = JSON.parse(text);
+      if (json == null || typeof json !== 'object') {
+        console.warn(`[quotes] ${proxyLabel} 解析後非物件 JSON`);
+        continue;
+      }
+      console.info(`[quotes] ${proxyLabel} OK ✓ ${url.slice(0, 80)}`);
+      return json;
+    } catch(e) {
+      console.warn(`[quotes] ${proxyLabel} 失敗（${e.name}: ${e.message}）`);
+    }
+  }
+  console.error(`[quotes] 所有 proxy 均失敗：${url.slice(0, 100)}`);
+  return null;
+}
+
+// 透過 CORS proxy 抓取 URL 並回傳純文字（供 CSV 格式使用）
+// 邏輯與 tryFetch 相同（含 gzip 自動解壓），但最終回傳 string 而非 JSON 物件
+async function tryFetchText(url, ms = 9000) {
+  for (const wrap of CORS_WRAPS) {
+    const proxyUrl   = wrap(url);
+    const proxyLabel = proxyUrl.includes('corsproxy') ? 'corsproxy' : 'proxy';
+    try {
+      const res = await fetchWithTimeout(proxyUrl, ms);
+      if (!res.ok) {
+        console.warn(`[quotes] ${proxyLabel} HTTP ${res.status} for ${url.slice(0,80)}`);
+        continue;
+      }
+      const buf   = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let text;
+      if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        // gzip 壓縮 → 解壓
+        const stream = new Response(buf).body.pipeThrough(new DecompressionStream('gzip'));
+        text = await new Response(stream).text();
+      } else {
+        text = new TextDecoder('utf-8').decode(buf);
+      }
+      return text;
+    } catch(e) {
+      console.warn(`[quotes] tryFetchText ${proxyLabel} 失敗（${e.name}: ${e.message}）`);
+    }
+  }
+  return null;
+}
+
+// 解析 Stooq.com CSV 格式
+// URL 參數 f=sd2t2ohlcv → 欄位順序：Symbol,Date,Time,Open,High,Low,Close,Volume
+// 回傳 { price, prevClose } 或 null（空字串/N/D 無資料 → null）
+function parseStooqCSV(text) {
+  if (!text || !text.trim()) return null;
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) return null;                     // 只有標題沒有資料
+  const cols  = lines[1].split(',');
+  // 欄位索引（0-based）：0=Symbol, 1=Date, 2=Time, 3=Open, 4=High, 5=Low, 6=Close, 7=Volume
+  const closeStr = (cols[6] ?? '').trim();
+  const openStr  = (cols[3] ?? '').trim();
+  if (closeStr === 'N/D' || closeStr === '' ) return null; // Stooq 無資料標記
+  const close = parseFloat(closeStr);
+  const open  = parseFloat(openStr);
+  if (!isFinite(close) || close <= 0) return null;
+  return {
+    price:     close,
+    prevClose: (isFinite(open) && open > 0) ? open : close  // 用開盤價估算前收
+  };
+}
+
+// 用 Stooq.com CSV API 抓取單一股票現價（Layer 2 備援）
+// 失敗（無 Stooq 符號 / 網路錯誤 / 無資料）回傳 null
+async function fetchStooqTicker(yahooSym) {
+  const stooqSym = STOOQ_MAP[yahooSym];
+  if (!stooqSym) return null;  // 此符號 Stooq 不支援（如 TWD=X）
+  const url  = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcv&h&e=csv`;
+  const text = await tryFetchText(url);
+  return parseStooqCSV(text);
+}
+
+// 用 open.er-api.com 取得 USD/TWD 即時匯率（Layer 3，匯率專用備援）
+// 此 API 原生支援 CORS，不需透過 proxy；免費方案每月 1500 次，個人使用遠低於上限
+// 成功回傳 TWD 匯率數字，失敗回傳 null
+async function fetchExchangeRate() {
+  try {
+    const res = await fetchWithTimeout('https://open.er-api.com/v6/latest/USD', 9000);
+    if (!res.ok) { console.warn(`[quotes] Open ER API HTTP ${res.status}`); return null; }
+    const json = await res.json();
+    const twd  = json?.rates?.TWD;
+    return (twd && isFinite(twd) && twd > 1) ? twd : null;
+  } catch(e) {
+    console.warn(`[quotes] Open ER API 失敗: ${e.message}`);
+    return null;
+  }
+}
+
+// 將取得的報價寫入全域 prices / changes 物件
+// sym: Yahoo 符號；price: 現價；prevClose: 前收（用來計算漲跌，可 null）
+function applyTickerData(sym, price, prevClose) {
+  const info = TICKER_MAP[sym];
+  if (!info) return;
+  // 匯率欄位與股價欄位的合理範圍不同
+  const p = (info.cur === 'rate')
+    ? safeNum(price, 1, 1000)
+    : safeNum(price, 0.01, 100000);
+  prices[info.key] = p;
+  // 匯率不計算漲跌（usdtwd 欄位沒有 changes 顯示需求）
+  if (info.key !== 'usdtwd' && prevClose != null) {
+    const prev = safeNum(prevClose, 0.01, 100000);
+    const chg  = p - prev;
+    changes[info.key] = {
+      change: safeNum(chg, -100000, 100000),
+      pct:    prev > 0 ? safeNum((chg / prev) * 100, -100, 100) : 0
+    };
+  }
+}
+
+// 顯示報價錯誤 Modal（列出所有失敗的符號，提示快取時間）
+// 若 modal 已開啟則更新內容（不重複疊加）
+function showQuoteErrorModal(missingSet) {
+  const modal = document.getElementById('quote-error-modal');
+  if (!modal) return;
+  // 更新失敗標的清單
+  const list = document.getElementById('quote-error-list');
+  list.innerHTML = '';
+  missingSet.forEach(sym => {
+    const li = document.createElement('li');
+    li.textContent = (sym === 'TWD=X') ? `${sym}（匯率）` : sym;
+    list.appendChild(li);
+  });
+  // 快取時間提示
+  const note   = document.getElementById('quote-error-cache-note');
+  const cached = loadPricesCache();
+  note.textContent = cached?.time
+    ? `淨資產顯示將使用上次快取值（${cached.time} 更新）。`
+    : '無可用快取，相關計算將使用預設估計值。';
+  modal.classList.add('show');
+}
+
+// 關閉報價錯誤 Modal
+function hideQuoteErrorModal() {
+  document.getElementById('quote-error-modal')?.classList.remove('show');
+}
+
+// 用 v8 chart API 抓取單一股票現價
+// 使用 1d/5d 取得最即時的日線資料；tryFetch 會自動處理 gzip 解壓
+async function fetchOneTicker(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+  const json = await tryFetch(url);
+  const meta = json?.chart?.result?.[0]?.meta;
+  return (meta?.regularMarketPrice) ? meta : null;
+}
+
+// ── 主要報價抓取流程（三層瀑布備援）──
+//
+// 執行順序：
+//   Layer 1  Yahoo Finance v8 chart API（全部 6 支平行）
+//   Layer 2  Stooq.com CSV（只補 Layer 1 失敗的非匯率標的，平行）
+//   Layer 3  open.er-api.com（只在 TWD=X 仍失敗時觸發）
+//   最終保底 localStorage 快取（補齊仍缺的符號）
+//   仍有失敗 → showQuoteErrorModal(missing)，不可靜默失敗
+//
+// 【v7 廢棄說明】Yahoo Finance v7 /quote 端點自 2024 年起需要 Crumb 認證，
+//   不帶 crumb 返回 401，CORS proxy 也無法繞過，直接移除。
+async function fetchQuotes() {
+  setQuoteStatus('loading');
+  console.group('[quotes] fetchQuotes 開始（三層備援：Yahoo → Stooq → Open ER）');
+
+  // 待補全的符號集合（初始為全部 6 支）
+  const missing = new Set(Object.keys(TICKER_MAP));
+  const total   = missing.size;
+
+  // ══ Layer 1：Yahoo Finance v8 chart API（主要來源）══
+  console.group('[quotes] Layer 1: Yahoo Finance v8');
+  const yahooResults = await Promise.all(
+    [...missing].map(async sym => ({ sym, meta: await fetchOneTicker(sym) }))
+  );
+  yahooResults.forEach(({ sym, meta }) => {
+    if (meta?.regularMarketPrice) {
+      // v8 meta 含 chartPreviousClose（前一交易日收盤），用來計算漲跌幅
+      applyTickerData(sym, meta.regularMarketPrice,
+        meta.chartPreviousClose ?? meta.regularMarketPrice);
+      missing.delete(sym);
+      console.info(`[quotes] L1 ✓ ${sym} = ${meta.regularMarketPrice}`);
+    } else {
+      console.warn(`[quotes] L1 ✗ ${sym} 無資料`);
+    }
+  });
+  console.info(`[quotes] Layer 1 完成：${total - missing.size}/${total} 支，待補 ${missing.size} 支`);
+  console.groupEnd();
+
+  // ══ Layer 2：Stooq.com CSV（補 Yahoo 失敗的非匯率標的）══
+  if (missing.size > 0) {
+    // TWD=X 不在 STOOQ_MAP 裡，filter 後不會觸發 Stooq 請求
+    const stooqTargets = [...missing].filter(sym => sym in STOOQ_MAP);
+    if (stooqTargets.length > 0) {
+      console.group('[quotes] Layer 2: Stooq.com CSV');
+      const stooqResults = await Promise.all(
+        stooqTargets.map(async sym => ({ sym, data: await fetchStooqTicker(sym) }))
+      );
+      stooqResults.forEach(({ sym, data }) => {
+        if (data?.price) {
+          applyTickerData(sym, data.price, data.prevClose);
+          missing.delete(sym);
+          console.info(`[quotes] L2 ✓ ${sym} = ${data.price}`);
+        } else {
+          console.warn(`[quotes] L2 ✗ ${sym} 無資料`);
+        }
+      });
+      console.info(`[quotes] Layer 2 完成：待補 ${missing.size} 支`);
+      console.groupEnd();
+    }
+  }
+
+  // ══ Layer 3：open.er-api.com（TWD=X 匯率專用備援）══
+  if (missing.has('TWD=X')) {
+    console.group('[quotes] Layer 3: Open ER API（TWD=X）');
+    const twd = await fetchExchangeRate();
+    if (twd) {
+      prices.usdtwd = safeNum(twd, 1, 1000);
+      missing.delete('TWD=X');
+      console.info(`[quotes] L3 ✓ TWD=X = ${twd}`);
+    } else {
+      console.warn('[quotes] L3 ✗ TWD=X 失敗');
+    }
+    console.groupEnd();
+  }
+
+  // ══ 結果判定 ══
+  if (missing.size === 0) {
+    // 全部成功 → 存快取、關閉先前的錯誤 modal（若有）
+    pricesReady = true;
+    savePricesCache();
+    setQuoteStatus('ok');
+    hideQuoteErrorModal();
+    console.info('[quotes] ✅ 全部報價取得成功');
+  } else {
+    // 有符號仍失敗 → 用 localStorage 快取補齊，並彈出 modal 通知
+    console.warn(`[quotes] ⚠ ${missing.size} 支仍失敗：${[...missing].join(', ')}`);
+    const cached = loadPricesCache();
+    if (cached?.prices) {
+      missing.forEach(sym => {
+        const info = TICKER_MAP[sym];
+        if (info && cached.prices[info.key] != null) {
+          prices[info.key]   = cached.prices[info.key];
+          if (cached.changes?.[info.key]) changes[info.key] = cached.changes[info.key];
+        }
+      });
+      pricesReady = true;
+      setQuoteStatus('partial', [...missing].join(', '));
+    } else {
+      // 連快取也沒有
+      setQuoteStatus('error');
+    }
+    // Modal 是主要通知管道，不使用 showAlert（避免重複提示）
+    showQuoteErrorModal(missing);
+  }
+
+  console.groupEnd();
+  updateQuoteTable();
+  refreshAll();
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║              歷史年化報酬參考數據                          ║
+// ║  從 Yahoo Finance 抓取各標的真實歷史報酬，供滑桿參考使用   ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 計算單一標的的 CAGR（複合年化成長率）
+// sym: Yahoo Finance 代號（如 'VT'）；years: 回溯年數（5 或 10）
+// 回傳：小數形式的年化報酬率（如 0.124 = 12.4%），失敗回傳 null
+async function fetchCAGR(sym, years) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1mo&range=${years}y`;
+  try {
+    const json = await tryFetch(url, 12000);
+    const result = json?.chart?.result?.[0];
+    if (!result) return null;
+
+    // 取出月收盤價，過濾掉 null 和異常值
+    const closes = result.indicators?.quote?.[0]?.close ?? [];
+    const valid  = closes.filter(p => p != null && isFinite(p) && p > 0);
+    if (valid.length < 12) return null;  // 至少需要 1 年資料
+
+    // CAGR = (終值 / 始值)^(1 / 實際年數) - 1
+    const actualYears = valid.length / 12;
+    const cagr = Math.pow(valid[valid.length - 1] / valid[0], 1 / actualYears) - 1;
+
+    // 合理性驗證：報酬率不應超過 ±200%，否則視為資料異常
+    return (isFinite(cagr) && Math.abs(cagr) < 2) ? cagr : null;
+  } catch(e) {
+    return null;
+  }
+}
+
+// 同時抓取所有持倉標的的 5 年與 10 年 CAGR（全部平行請求，加快速度）
+async function fetchHistoricalReturns() {
+  const symbols = ['VT', 'BND', '0050.TW', '006208.TW'];
+  const results = {};
+
+  // 8 個請求同時發出（4 標的 × 2 年期）
+  await Promise.all(
+    symbols.flatMap(sym =>
+      [5, 10].map(async years => {
+        const cagr = await fetchCAGR(sym, years);
+        if (cagr !== null) {
+          if (!results[sym]) results[sym] = {};
+          results[sym][years] = cagr;
+        }
+      })
+    )
+  );
+
+  return Object.keys(results).length ? results : null;
+}
+
+// 將歷史報酬數據渲染到模擬圖下方的參考面板
+// 同時根據目前持倉比例計算「加權估算報酬率」
+function renderReturnRef(data) {
+  const panel   = document.getElementById('return-ref-panel');
+  const content = document.getElementById('return-ref-content');
+  if (!panel || !content || !data) return;
+
+  // ── 依目前持倉比例計算加權 5 年估算 ────────────────────────
+  let weighted5y = null;
+  if (pricesReady) {
+    const h    = getCurrentHoldings();
+    const vtV  = h.vt      * prices.vt      * prices.usdtwd;
+    const bndV = h.bnd     * prices.bnd     * prices.usdtwd;
+    const t50V = h.tw0050  * prices.tw0050;
+    const t6V  = h.tw006208* prices.tw006208;
+    const total = vtV + bndV + t50V + t6V;
+
+    if (total > 0) {
+      let w5 = 0;
+      let coveredWeight = 0;
+      const add = (val, key) => {
+        if (data[key]?.[5] != null) {
+          w5 += (val / total) * data[key][5];
+          coveredWeight += val / total;
+        }
+      };
+      add(vtV,  'VT');
+      add(bndV, 'BND');
+      add(t50V, '0050.TW');
+      add(t6V,  '006208.TW');
+      // 只有超過 50% 持倉有歷史資料時，加權估算才有意義
+      if (coveredWeight > 0.5) weighted5y = w5 / coveredWeight;
+    }
+  }
+
+  // ── 格式化工具 ──────────────────────────────────────────────
+  const fmtPct = v => v == null ? '—'
+    : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+  const col = v => v == null ? '#6e7681'
+    : v >= 0.05 ? '#3fb950'   // > 5% 綠
+    : v >= 0    ? '#d29922'   // 0~5% 黃
+    : '#f85149';              // 負值紅
+
+  // ── 逐標的渲染 ──────────────────────────────────────────────
+  const names = { 'VT':'VT', 'BND':'BND', '0050.TW':'0050', '006208.TW':'006208' };
+  let html = '<div style="display:flex; flex-wrap:wrap; gap:6px 24px; align-items:center;">';
+
+  ['VT', 'BND', '0050.TW', '006208.TW'].forEach(sym => {
+    const d = data[sym];
+    if (!d) return;
+    html += `<span>
+      <span style="color:#e6edf3; font-weight:600;">${names[sym]}</span>`;
+    if (d[5]  != null) html += ` <span style="color:${col(d[5])}">5年&thinsp;${fmtPct(d[5])}</span>`;
+    if (d[10] != null) html += ` <span style="color:${col(d[10])}; opacity:0.65;">10年&thinsp;${fmtPct(d[10])}</span>`;
+    html += '</span>';
+  });
+
+  // ── 加權估算區塊 ────────────────────────────────────────────
+  if (weighted5y != null) {
+    html += `
+    <span style="padding-left:14px; border-left:1px solid #30363d;">
+      <span style="color:#8b949e;">▶ 你的配置加權估算</span>
+      <span style="color:${col(weighted5y)}; font-weight:700; font-size:15px;"> ${fmtPct(weighted5y)}</span>
+      <span style="color:#6e7681; font-size:11px;">（5年歷史均值）</span>
+    </span>`;
+  }
+
+  html += '</div>';
+  content.innerHTML = html;
+  panel.style.display = 'block';
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    資產計算                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 計算當前淨資產（TWD）
+// 公式：美股市值（USD→TWD）+ 台股市值 + 現金 - 房貸餘額
+function calcNet(h) {
+  const usd = (h.vt * prices.vt + h.bnd * prices.bnd) * prices.usdtwd;
+  const twd = h.tw0050 * prices.tw0050 + h.tw006208 * prices.tw006208 + h.auo * prices.auo;
+  return Math.round(usd + twd + h.cash - h.mortgage);
+}
+
+// 從頁面輸入欄位讀取目前持倉數量，回傳物件
+// 使用 safeNum 確保輸入為合法有限數字，防止 NaN/Infinity 進入計算
+function getCurrentHoldings() {
+  const h = {};
+  HOLDINGS_KEYS.forEach(k => {
+    const raw = document.getElementById('f-' + k).value;
+    // 股數：0 ~ 1 千萬股；現金/房貸：0 ~ 100 億元；期數：0 ~ 600 期（50 年）
+    if (k === 'months') h[k] = safeNum(raw, 0, 600);
+    else if (k === 'cash' || k === 'mortgage') h[k] = safeNum(raw, 0, 1e10);
+    else h[k] = safeNum(raw, 0, 1e7);  // 股數
+  });
+  return h;
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    報價表格                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 更新「即時報價 & 持股明細」表格
+function updateQuoteTable() {
+  const h = getCurrentHoldings();
+  // 每行的設定：標的名、內部 key、幣別、持股數、價格格式化函式
+  const rows = [
+    { ticker:'VT',       key:'vt',       cur:'USD', shares:h.vt,       priceFmt: p => '$' + p.toFixed(2) },
+    { ticker:'BND',      key:'bnd',      cur:'USD', shares:h.bnd,      priceFmt: p => '$' + p.toFixed(2) },
+    { ticker:'0050.TW',  key:'tw0050',   cur:'TWD', shares:h.tw0050,   priceFmt: p => 'NT$' + p.toFixed(2) },
+    { ticker:'006208.TW',key:'tw006208', cur:'TWD', shares:h.tw006208, priceFmt: p => 'NT$' + p.toFixed(2) },
+    { ticker:'友達 2409', key:'auo',      cur:'TWD', shares:h.auo,      priceFmt: p => 'NT$' + p.toFixed(2) },
+  ];
+
+  const tbody = document.getElementById('quoteTableBody');
+  // 漲跌顏色：正 → 綠、負 → 紅、零 → 灰
+  const toCss = v => v > 0 ? 'price-up' : v < 0 ? 'price-down' : 'price-neu';
+  const arrow  = v => v > 0 ? ' ▲' : v < 0 ? ' ▼' : '';
+
+  let html = '';
+  rows.forEach(r => {
+    const p = prices[r.key];
+    const c = changes[r.key];
+    // 美股市值需乘以匯率換算成 TWD
+    const val = r.cur === 'USD'
+      ? Math.round(r.shares * p * prices.usdtwd)
+      : Math.round(r.shares * p);
+    const priceTxt  = pricesReady ? r.priceFmt(p) : '---';
+    const changeTxt = (pricesReady && c)
+      ? `<span class="${toCss(c.change)}">${priceTxt}${arrow(c.change)} (${c.pct >= 0 ? '+' : ''}${c.pct.toFixed(2)}%)</span>`
+      : `<span class="price-neu">${priceTxt}</span>`;
+    const valTxt = pricesReady ? 'NT$ ' + fmt(val) : '---';
+    html += `<tr>
+      <td><span class="ticker">${r.ticker}</span></td>
+      <td>${changeTxt}</td>
+      <td>${fmt(r.shares)} 股</td>
+      <td class="text-right">${valTxt}</td>
+    </tr>`;
+  });
+
+  // 現金列（無報價，直接顯示輸入值）
+  html += `<tr>
+    <td><span class="ticker">現金</span></td>
+    <td>—</td><td>—</td>
+    <td class="text-right">NT$ ${fmt(h.cash)}</td>
+  </tr>`;
+
+  // USD/TWD 匯率列
+  const rateTxt = pricesReady ? prices.usdtwd.toFixed(2) : '---';
+  html += `<tr style="font-weight:700">
+    <td colspan="3" style="color:#8b949e;padding-top:12px">USD/TWD 匯率</td>
+    <td class="text-right" style="padding-top:12px;color:#d29922">${rateTxt}</td>
+  </tr>`;
+
+  tbody.innerHTML = html;
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                  頁面核心刷新                             ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 重新計算並更新頁面上所有數值（淨資產、4%法則、進度條、圖表）
+function refreshAll() {
+  const h         = getCurrentHoldings();
+  const net       = pricesReady ? calcNet(h) : null;  // 報價未就緒時不計算
+  const targetWan = +document.getElementById('sl-target').value;
+  const target    = targetWan * 10000;  // 滑桿單位是「萬」，換算成元
+
+  if (net !== null) {
+    // ── 計算與上次快照的差異 ─────────────────────────────────
+    const lastSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
+    const diff     = lastSnap ? net - lastSnap.net : null;
+    const arrow    = diff !== null ? (diff >= 0 ? '▲' : '▼') : '';
+    const col      = diff !== null ? (diff >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+    const pct      = (diff !== null && lastSnap?.net) ? ((diff / lastSnap.net) * 100).toFixed(2) : null;
+
+    // 更新淨資產數值
+    document.getElementById('display-net').textContent = 'NT$ ' + fmt(net);
+    document.getElementById('display-diff').innerHTML  = diff !== null
+      ? `較上次快照 <span style="color:${col}">${arrow} ${fmt(Math.abs(diff))}（${diff>=0?'+':''}${pct}%）</span>`
+      : '尚無快照紀錄';
+
+    // 更新目標達成進度條（目前資產 / 目標資產）
+    const prog = Math.min(100, (net / target * 100)).toFixed(1);
+    document.getElementById('display-progress').textContent = `🎯 距目標 ${fmtW(target)}：${prog}%`;
+    document.getElementById('progress-fill-net').style.width = prog + '%';
+
+    // ── 計算 4% 法則安全提領額 ──────────────────────────────
+    // 公式：淨資產 × 提領率 / 12 = 每月可安全提領金額
+    const withdraw     = +document.getElementById('sl-withdraw').value / 100;
+    const fireMonthly  = Math.round(net * withdraw / 12);
+    document.getElementById('display-fire-monthly').textContent = 'NT$ ' + fmt(fireMonthly) + ' / 月';
+    document.getElementById('display-fire-annual').textContent  = '年化提領：NT$ ' + fmt(Math.round(net * withdraw));
+    // 進度條：以目標月提領 10 萬為分母
+    document.getElementById('progress-fill-fire').style.width   = Math.min(100, fireMonthly / 100000 * 100) + '%';
+
+    // 更新資產配置圓餅圖
+    updateDonut(h, net);
+  }
+
+  // 更新其他固定欄位（不依賴報價）
+  document.getElementById('display-target-label').textContent = fmtW(target);
+  document.getElementById('display-mortgage').textContent     = 'NT$ ' + fmt(h.mortgage);
+  document.getElementById('display-months').textContent       = h.months
+    ? `剩餘 ${h.months} 期（${Math.ceil(h.months/12)} 年）` : '—';
+  document.getElementById('display-cash').textContent         = 'NT$ ' + fmt(h.cash);
+
+  updateQuoteTable();
+  try { drawFireChart(); } catch(e) { console.error('drawFireChart:', e); }
+  // 持倉改變時重算加權估算（returnRefData 已快取，不重新發 API 請求）
+  if (returnRefData) renderReturnRef(returnRefData);
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                  資產配置圓餅圖                           ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 更新右上角資產配置甜甜圈圖（已存在則只更新資料，否則新建）
+function updateDonut(h, net) {
+  // 計算各資產的 TWD 市值
+  const vtVal       = Math.round(h.vt      * prices.vt      * prices.usdtwd);
+  const bndVal      = Math.round(h.bnd     * prices.bnd     * prices.usdtwd);
+  const tw0050Val   = Math.round(h.tw0050  * prices.tw0050);
+  const tw006208Val = Math.round(h.tw006208* prices.tw006208);
+  const auoVal      = Math.round(h.auo     * prices.auo);
+  const cashVal     = h.cash;
+  const totalAssets = vtVal + bndVal + tw0050Val + tw006208Val + auoVal + cashVal;
+  if (!totalAssets) return;  // 全部為零時不繪製
+
+  const labels = ['VT','BND','0050','006208','友達','現金'];
+  const vals   = [vtVal, bndVal, tw0050Val, tw006208Val, auoVal, cashVal];
+  const pcts   = vals.map(v => (v / totalAssets * 100).toFixed(1));
+
+  // 圓心顯示總淨值
+  document.getElementById('donut-center-val').textContent = net >= 1e6 ? fmtM(net) : fmtW(net);
+
+  // 更新圖例列表
+  document.getElementById('donutLegend').innerHTML = labels.map((l,i) => `
+    <div class="legend-item">
+      <div class="legend-name"><div class="legend-dot" style="background:${DONUT_BORDERS[i]}"></div>${l}</div>
+      <div class="legend-pct">${pcts[i]}%</div>
+    </div>`).join('');
+
+  // 圖表已存在時只更新資料（避免重建造成閃爍）
+  if (donutChart) {
+    donutChart.data.datasets[0].data = vals;
+    donutChart.update();
+    return;
+  }
+  // 首次建立圓餅圖
+  donutChart = new Chart(document.getElementById('donutChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets:[{ data:vals, backgroundColor:DONUT_COLORS, borderColor:DONUT_BORDERS, borderWidth:2, hoverOffset:5 }]
+    },
+    options:{ cutout:'68%', plugins:{legend:{display:false}}, responsive:true, maintainAspectRatio:true }
+  });
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                退休資產模擬折線圖                         ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 日期字串 → 小數年份（供 Chart.js linear 軸使用，可獨立測試）
+// 支援 YYYY-MM-DD 或 YYYY/MM/DD 兩種格式
+// 換算公式：小數年份 = 整數年 + (已過月份天數 + 當月日) / 365.25
+// 例：2026-05-07 → 2026 + ((5-1)*30.44 + 7) / 365.25 ≈ 2026.35
+function fracYear(dateStr) {
+  const p = String(dateStr).replace(/-/g,'/').split('/');
+  const y = +p[0], m = p[1] ? +p[1] : 1, d = p[2] ? +p[2] : 15;
+  return y + ((m - 1) * 30.44 + d) / 365.25;
+}
+
+// 根據滑桿參數，繪製未來 40 年的資產模擬曲線
+function drawFireChart() {
+  // 從滑桿讀取模擬參數
+  const monthly   = +document.getElementById('sl-monthly').value;   // 每月投入（TWD）
+  const retRate   = +document.getElementById('sl-return').value / 100;  // 年化報酬率
+  const wdrRate   = +document.getElementById('sl-withdraw').value / 100; // 退休提領率
+  const targetWan = +document.getElementById('sl-target').value;
+  const target    = targetWan * 10000;  // 目標資產（TWD）
+  const BASE_YEAR = new Date().getFullYear();
+  const YEARS     = 40;  // 模擬未來 40 年
+
+  // fracYear(dateStr) 已提升至全域作用域（供 _check.js 單元測試存取）
+
+  // ── 歷史快照（全部顯示，依日期排序）────────────────────────
+  const sortedSnaps  = [...snapshots].sort((a,b) => a.date < b.date ? -1 : 1);
+  const lastSnap     = sortedSnaps.length ? sortedSnaps[sortedSnaps.length - 1] : null;
+  const lastRealYear = lastSnap ? parseInt(lastSnap.date.slice(0,4)) : BASE_YEAR - 1;
+  const startNet     = lastSnap ? lastSnap.net
+    : (pricesReady ? calcNet(getCurrentHoldings()) : 0);
+
+  // ── 三條線資料集（{x, y} 格式；x 為小數年份確保時間比例正確）
+  const dsReal   = sortedSnaps.map(s => ({ x: fracYear(s.date), y: Math.round(s.net) }));
+  const dsAccum  = [];
+  const dsWithdr = [];
+
+  // ── 月度模擬迴圈：從快照的「下個月」開始，確保曲線平滑連續 ──
+  //
+  // 【為什麼要從「下個月」而非「年初」開始？】
+  //   舊版從 simStartYear（lastRealYear + 1）的 1 月才開始模擬，
+  //   若快照是 2026/05，則迴圈從 2027/01 才產生第一個月度點。
+  //   這導致兩個問題：
+  //     1. 中間 8 個月（2026/06 ~ 2026/12）完全沒有資料點
+  //        → Chart.js 拉一條平直插值線，視覺上呈現「平段」
+  //     2. 2027/01 的 simVal 只被推進了「1 個月」複利，
+  //        不是正確的「8 個月」累積，數值偏低
+  //   修正：從快照日期的下一個月開始逐月計算，每月都有一個資料點，
+  //   藍線才能呈現正確的指數複利 + 定期定額平滑上升曲線。
+  //
+  // 【月複利率換算公式】
+  //   年化報酬率 r → 月複利率 = (1 + r)^(1/12) - 1
+  //   例：年化 7% → 月複利率 ≈ 0.565%（而非 7%/12 = 0.583%，兩者差距在長期複利中有意義）
+  const mRetRate = Math.pow(1 + retRate, 1 / 12) - 1;   // 年化報酬率轉月複利率
+
+  // 決定迴圈起始年月
+  // ・有快照：從快照當月的「下個月」開始（確保銜接點不重複計算）
+  // ・無快照：從 BASE_YEAR 的 1 月開始（全部都是模擬資料）
+  let loopYr, loopMo;
+  if (lastSnap) {
+    const p = String(lastSnap.date).replace(/-/g, '/').split('/');
+    loopYr = +p[0];
+    loopMo = (p[1] ? +p[1] : 1) + 1;      // 快照月 + 1（若快照是 12 月則進位到明年 1 月）
+    if (loopMo > 12) { loopMo = 1; loopYr++; }
+    // 橘線（dsReal）末端即為藍線（dsAccum）起點——同一個 x/y 確保兩線無縫接合
+    dsAccum.push({ x: fracYear(lastSnap.date), y: Math.round(startNet) });
+  } else {
+    // 沒有任何歷史快照，從今年 1 月起全部模擬
+    loopYr = Math.max(BASE_YEAR, lastRealYear + 1);
+    loopMo = 1;
+  }
+
+  // simVal：當前模擬資產值，初始值為最新快照淨資產（或 0）
+  // fireYear：FIRE 發生年份（null = 尚未達標）
+  // fireX：FIRE 發生月份的小數年份座標（用於 annotation 精確定位）
+  let simVal = startNet, fireYear = null, fireX = null;
+
+  // outer: 標籤讓內層可用 break outer 提前結束雙層迴圈（本版未使用，但保留以備未來擴充）
+  outer: for (let yr = loopYr; yr <= BASE_YEAR + YEARS; yr++) {
+    // 第一年從快照的下一個月開始，後續年份從 1 月開始
+    for (let mo = (yr === loopYr ? loopMo : 1); mo <= 12; mo++) {
+
+      // ── 每月資產更新 ─────────────────────────────────────────
+      if (fireYear === null) {
+        // 【累積期】複利增值 + 每月定期定額投入
+        // 公式：新值 = 舊值 × (1 + 月複利率) + 每月投入金額
+        // 注意：投入金額在月末計算（end-of-month），模擬定期定額在月底扣款
+        simVal = simVal * (1 + mRetRate) + monthly;
+      } else {
+        // 【提領期】複利增值 - 每月提領金額
+        // 年提領率換算為月提領率：wdrRate / 12
+        // 例：4% 年提領率 → 每月從當期資產提領 4%/12 ≈ 0.333%
+        // 注意：每月提領金額會隨資產增減而浮動（非固定金額）
+        simVal = simVal * (1 + mRetRate) - simVal * wdrRate / 12;
+      }
+
+      // 本月的 x 座標（小數年份，用於 Chart.js linear 軸定位）
+      const x = fracYear(`${yr}/${String(mo).padStart(2, '0')}/01`);
+
+      if (fireYear === null && simVal >= target) {
+        // ── 本月達到財務自由目標（FIRE 月份）───────────────────
+        // 同時將此點加入藍線末端（dsAccum）和綠線起點（dsWithdr），
+        // 讓兩條線在 FIRE 點完美銜接，沒有視覺跳斷
+        fireYear = yr;
+        fireX    = x;
+        dsAccum.push({ x, y: Math.round(simVal) });   // 藍線在此結束
+        dsWithdr.push({ x, y: Math.round(simVal) });  // 綠線從此開始
+      } else if (fireYear === null) {
+        // ── 累積期：每月加一個點到藍線 ──────────────────────────
+        dsAccum.push({ x, y: Math.round(simVal) });
+      } else {
+        // ── 提領期：每月加一個點到綠虛線 ────────────────────────
+        // Math.max(0, ...) 防止資產耗盡後顯示負值（破產保護）
+        dsWithdr.push({ x, y: Math.max(0, Math.round(simVal)) });
+      }
+    }
+  }
+
+  // ── 圖表標注設定 ────────────────────────────────────────────
+  const RETIREMENT_YEAR = 2032;  // 預計退休年份（可依個人計畫修改）
+
+  // ── 目標門檻水平虛線 ─────────────────────────────────────────
+  const annotations = {
+    targetLine: {
+      type:'line', yMin:target, yMax:target,
+      borderColor:'rgba(88,166,255,0.35)', borderWidth:1.5, borderDash:[6,4],
+      label:{ content:'目標門檻', display:true, position:'end', color:'#58a6ff', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)' }
+    },
+  };
+
+  // 財務自由達標點（綠色圓點；xValue 用小數年份配合線性軸）
+  if (fireX !== null) {
+    const fp = dsWithdr[0] ?? dsAccum[dsAccum.length - 1];
+    // 標籤顯示精確到月：e.g. "★ 財務自由 2033/05"
+    const fireYrInt = Math.floor(fireX);
+    const fireMo    = Math.min(12, Math.max(1, Math.round((fireX - fireYrInt) * 12) + 1));
+    const fireLabel = `★ FIRE ${fireYrInt}/${String(fireMo).padStart(2, '0')}`;
+    annotations.firePoint = {
+      type:'point', xValue:fireX, yValue:fp?.y ?? target,
+      radius:6, backgroundColor:'#3fb950', borderColor:'#3fb950', borderWidth:2,
+      label:{ content:fireLabel, display:true, position:'top', color:'#3fb950', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
+    };
+  }
+
+  // 房貸結清點（黃色圓點）——找最近的月度資料點
+  const h = getCurrentHoldings();
+  if (h.months > 0) {
+    const mortYr = lastRealYear + Math.ceil(h.months / 12);
+    if (mortYr <= BASE_YEAR + YEARS) {
+      const mortX  = fracYear(`${mortYr}/01/01`);
+      const allPts = [...dsAccum, ...dsWithdr];
+      const mp     = allPts.length
+        ? allPts.reduce((best, p) => Math.abs(p.x - mortX) < Math.abs(best.x - mortX) ? p : best)
+        : null;
+      if (mp) annotations.mortPoint = {
+        type:'point', xValue:mortX, yValue:mp.y,
+        radius:5, backgroundColor:'#d29922', borderColor:'#d29922', borderWidth:2,
+        label:{ content:'房貸結清', display:true, position:'top', color:'#d29922', font:{size:11}, backgroundColor:'rgba(13,17,23,0.85)', yAdjust:-4 }
+      };
+    }
+  }
+
+  // ── Chart.js 設定 ───────────────────────────────────────────
+  const cfg = {
+    type:'line',
+    data:{
+      datasets:[
+        // 橘線：實際快照（每筆都是真實持倉紀錄）
+        { label:'實際快照（橘）', data:dsReal,   borderColor:'#f0883e', backgroundColor:'rgba(240,136,62,0.15)', borderWidth:2.5, pointRadius:5, pointHoverRadius:7, pointBackgroundColor:'#f0883e', tension:0.3, fill:false },
+        // 藍線：模擬累積期（持續投入直到達標）
+        { label:'模擬累積（藍）', data:dsAccum,  borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,0.07)', borderWidth:2.5, pointRadius:0, tension:0.4, fill:true },
+        // 綠虛線：模擬提領期（達標後退休提領）
+        { label:'退休提領（綠）', data:dsWithdr, borderColor:'#3fb950', backgroundColor:'rgba(63,185,80,0.07)',  borderWidth:2.5, borderDash:[6,3], pointRadius:0, tension:0.4, fill:true }
+      ]
+    },
+    options:{
+      responsive:false, maintainAspectRatio:false,
+      interaction:{ intersect:false, mode:'nearest' },
+      plugins:{
+        legend:{
+          position:'top',
+          labels:{ color:'#e6edf3', font:{ size:13, weight:'600' }, usePointStyle:true, padding:24 }
+        },
+        tooltip:{
+          backgroundColor:'#161b22', borderColor:'#30363d', borderWidth:1,
+          titleColor:'#e6edf3', bodyColor:'#8b949e',
+          callbacks:{
+            title: items => {
+              if (!items.length) return '';
+              const v = items[0].parsed.x;
+              const yr = Math.floor(v);
+              const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
+              return `${yr} / ${String(mo).padStart(2,'0')}`;
+            },
+            label: ctx => ctx.parsed.y != null ? `  ${ctx.dataset.label}：NT$ ${fmt(ctx.parsed.y)}` : null
+          }
+        },
+        annotation:{ annotations }
+      },
+      scales:{
+        x:{
+          type:'linear',   // 數值型軸，讓 fracYear 小數年份呈現正確時間比例
+
+          // ── 月曆對齊刻度（afterBuildTicks）─────────────────────────
+          // 【為什麼需要自訂 afterBuildTicks？】
+          //   Chart.js 的 linear 軸預設會在「等間距的數值」產生刻度，
+          //   例如 2026.0, 2026.5, 2027.0... 這些不是自然的月份邊界，
+          //   標籤顯示會出現 "2026/07" 等奇怪的非整月刻度。
+          //   透過 afterBuildTicks，我們強制讓每個刻度都對齊到「每月 1 日」
+          //   的 fracYear 值，讓 X 軸標籤永遠顯示整月（2026/01、2026/02...）。
+          // 【0.05 寬鬆邊界的作用】
+          //   axis.min/max 是根據資料範圍計算的，可能因浮點誤差導致
+          //   邊界月份被排除。+/- 0.05 ≈ 18 天的容忍值確保邊界月份都能顯示。
+          afterBuildTicks(axis) {
+            if (axis.min == null || axis.max == null) return;
+            const tks = [];
+            for (let yr = Math.floor(axis.min); yr <= Math.ceil(axis.max); yr++) {
+              for (let mo = 1; mo <= 12; mo++) {
+                const x = fracYear(`${yr}/${String(mo).padStart(2,'0')}/01`);
+                if (x >= axis.min - 0.05 && x <= axis.max + 0.05) tks.push({ value: x });
+              }
+            }
+            axis.ticks = tks;
+          },
+          ticks:{
+            color:'#8b949e', font:{size:11},
+            maxRotation:90, minRotation:45,   // 旋轉 45°~90°，避免月份標籤互相重疊
+            // 將 fracYear 小數值反轉回「YYYY/MM」顯示格式
+            // 公式：月份 = round((小數部分 × 12)) + 1，再 clamp 到 1~12
+            callback: v => {
+              const yr = Math.floor(v);
+              const mo = Math.min(12, Math.max(1, Math.round((v - yr) * 12) + 1));
+              return `${yr}/${String(mo).padStart(2,'0')}`;
+            }
+          },
+          grid:{ color:'#21262d' }
+        },
+        y:(()=>{
+          // ── Y 軸刻度美觀演算法 ────────────────────────────────────
+          // 【目標】產生約 10 個刻度，且步距是「人類易讀的整數」：
+          //   1M, 2M, 2.5M, 5M, 10M... 而不是 3.7M, 7.4M 這種難讀的數字
+          //
+          // 【演算法步驟】
+          //   1. scaleBase = 目標資產 × 1.3（留 30% 上方空間，避免頂到邊緣）
+          //   2. raw = scaleBase / 10（預期產生 10 個刻度的原始步距）
+          //   3. mag = 10^floor(log10(raw))（取 raw 的數量級，e.g. 3M → 10^6 = 1M）
+          //   4. norm = raw / mag（標準化到 1~10 範圍）
+          //   5. step = 從 {1, 2, 2.5, 5, 10} 中選最接近 norm 的值 × mag
+          //   例：目標 30M → scaleBase=39M → raw=3.9M → mag=1M → norm=3.9
+          //      → 選 5 → step=5M → yMax=40M → 刻度：0,5M,10M,...,40M
+          const scaleBase = target * 1.3;
+          const raw  = scaleBase / 10;
+          const mag  = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+          const norm = raw / mag;
+          const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+          const yMax = Math.ceil(scaleBase / step) * step;  // 無條件進位到步距的整數倍
+          return {
+            min: 0, max: yMax,
+            ticks:{
+              stepSize: step,
+              color:'#8b949e', font:{size:12},
+              // 大於 100 萬（1e6）顯示 M 單位；否則顯示萬
+              callback: v => v >= 1e6 ? (v/1e6).toFixed(0)+'M' : (v/1e4).toFixed(0)+'萬'
+            },
+            grid:{ color:'#21262d' }
+          };
+        })()
+      }
+    }
+  };
+
+  // ── 退休目標年份垂直標線 Plugin（純 Canvas 手繪，非 annotation）──
+  //
+  // 【為什麼不用 chartjs-plugin-annotation 的 line 類型？】
+  //   annotation 的垂直線在 linear x 軸上需要 xMin/xMax 為數值，
+  //   但標籤框的圓角背景、半透明效果難以透過 annotation API 精細控制。
+  //   直接用 Canvas API 手繪，可完全掌控每個視覺細節。
+  //
+  // 【ctx.save() / ctx.restore() 的必要性】
+  //   Chart.js 在呼叫 afterDraw 後會繼續使用同一個 ctx，
+  //   如果不 save/restore，我們設定的 strokeStyle、lineDash 等狀態
+  //   會污染後續所有繪製操作（如 annotation、tooltip）。
+  const retirementLinePlugin = {
+    id: 'retireLine',
+    afterDraw(chart) {
+      if (!chart.scales.x) return;
+
+      // getPixelForValue：將軸上的數值（小數年份）轉換為 canvas 上的 x 像素座標
+      const px = chart.scales.x.getPixelForValue(RETIREMENT_YEAR);
+      // 若退休年在當前可見範圍外（例如捲動到最右邊時），不需繪製
+      if (px < chart.chartArea.left || px > chart.chartArea.right) return;
+
+      const { ctx, chartArea: { top, bottom } } = chart;
+      const x = px;
+      ctx.save();  // 保存 canvas 狀態，確保繪製後能完整還原
+
+      // ── 繪製粉色虛線（從圖表頂端到底端）────────────────────────
+      ctx.strokeStyle = '#f778ba';       // 粉紅色（FIRE 主題色）
+      ctx.lineWidth   = 2.5;
+      ctx.setLineDash([6, 4]);           // 虛線樣式：6px 實線、4px 間隔
+      ctx.globalAlpha = 0.85;            // 略微透明，不搶走資料線的視覺重心
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);               // 清除虛線設定（避免影響後續繪製）
+      ctx.globalAlpha = 1;
+
+      // ── 繪製標籤背景框 ───────────────────────────────────────────
+      // 先量測文字寬度，再根據文字大小動態計算外框尺寸
+      const label = '\uD83C\uDF82 退休 2032（50歲）';   // 🎂 Unicode emoji
+      ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+      const tw  = ctx.measureText(label).width;  // 文字實際像素寬度
+      const pad = 8, bh = 22;                    // 水平內距 8px、框高 22px
+      const bx  = x - tw / 2 - pad;             // 框左上角 x（以虛線為中心水平置中）
+      const by  = top + 10;                      // 框左上角 y（距圖表頂端 10px）
+      ctx.fillStyle = 'rgba(13,17,23,0.92)';     // 深色半透明背景
+      ctx.beginPath();
+      // roundRect 是較新的 API，舊版瀏覽器不支援，fallback 使用 rect
+      ctx.roundRect ? ctx.roundRect(bx, by, tw + pad * 2, bh, 4)
+                    : ctx.rect(bx, by, tw + pad * 2, bh);
+      ctx.fill();
+      ctx.strokeStyle = '#f778ba';   // 外框與虛線同色
+      ctx.lineWidth   = 1.2;
+      ctx.stroke();
+
+      // ── 繪製標籤文字 ─────────────────────────────────────────────
+      ctx.fillStyle    = '#f778ba';
+      ctx.textAlign    = 'center';        // 以 x 為中心水平置中
+      ctx.textBaseline = 'middle';        // 垂直置中於框高
+      ctx.fillText(label, x, by + bh / 2);
+      ctx.restore();  // 還原所有 canvas 狀態
+    }
+  };
+
+  // ── Canvas 尺寸動態計算：退休年固定落在可視寬度 2/3 處 ──────
+  //
+  // 【設計目標】
+  //   - 退休目標年（RETIREMENT_YEAR）永遠出現在畫面左側約 2/3 的位置
+  //   - 後續的提領期延伸到畫面右方，需橫向捲動才能看到
+  //   - 這樣使用者打開頁面就能立刻看到「距退休還有多遠」的完整脈絡
+  //
+  // 【計算流程】
+  //   1. preRetSpan = 最早資料點 → 退休年 的年數跨度
+  //   2. pxPerYear  = containerW * (2/3) / preRetSpan
+  //      → 讓 preRetSpan 年恰好佔容器寬度的 2/3
+  //   3. totalWidth = pxPerYear × totalSpan
+  //      → Canvas 總寬 = 每年像素 × 全部年數
+  //   最少保證每年 120px（≈ 10px/月），確保月份標籤不會重疊
+  const canvas     = document.getElementById('fireChart');
+  const container  = canvas.parentElement;           // .chart-container（捲動層）
+  const savedScroll   = container.scrollLeft;        // 重繪前先保留捲動位置，重繪後還原
+  const containerW    = container.clientWidth  || 800;
+  const containerH    = container.clientHeight || 560;
+
+  // 最早資料點（橘線第一個快照，或無快照時從今年開始）
+  const firstX     = dsReal.length ? dsReal[0].x : (loopYr ?? BASE_YEAR);
+  // 最早點到退休年的年數（至少 1 年，避免除以零）
+  const preRetSpan = Math.max(RETIREMENT_YEAR - firstX, 1);
+  // 最早點到模擬結束（BASE_YEAR + 40年）的年數
+  const totalSpan  = Math.max(BASE_YEAR + YEARS - firstX, preRetSpan + 1);
+
+  // 每年對應的像素寬度
+  // ・理想值：讓退休年落在容器 2/3 處
+  // ・下限 120px：確保每個月份標籤（10px × 12 個月）有足夠寬度
+  const pxPerYear  = Math.max(Math.ceil(containerW * 2 / 3 / preRetSpan), 120);
+
+  // Canvas 總寬（至少和容器同寬，避免圖表縮小到小於容器）
+  const totalWidth = Math.max(Math.ceil(pxPerYear * totalSpan), containerW);
+
+  // 直接設定 canvas 的實際像素尺寸與 CSS 顯示尺寸（兩者必須一致，否則圖形模糊）
+  // 注意：responsive:false 時 Chart.js 不自動調整 canvas 尺寸，需手動設定
+  canvas.width        = totalWidth;
+  canvas.height       = containerH;
+  canvas.style.width  = totalWidth  + 'px';
+  canvas.style.height = containerH  + 'px';
+
+  // ── 凍結 Y 軸 Plugin（橫向捲動時 Y 軸不隨圖消失）─────────────
+  //
+  // 【問題根源】
+  //   圖表 canvas 寬度可能超過 2000px，放在 .chart-container（overflow-x:auto）裡，
+  //   捲動時整個 canvas 往左移動，Y 軸也跟著消失到畫面外。
+  //
+  // 【解決方案：雙 canvas 疊加法】
+  //   1. #yAxisOverlay  ─ 絕對定位在 .chart-outer 的左上角（不在捲動容器內）
+  //   2. #fireChart     ─ 在 .chart-container 內，可正常橫向捲動
+  //   每次圖表重繪後，此 plugin 的 afterDraw() 把主 canvas 左側
+  //   的 Y 軸區域（寬度 = chartArea.left）複製貼到 overlay canvas，
+  //   overlay 因為在捲動層之外，永遠固定在左側不動。
+  //
+  // 【為什麼用 drawImage 而非獨立 Chart.js 實例？】
+  //   獨立實例需要同步兩個圖表的 Y 軸範圍，實作複雜且有閃爍風險。
+  //   drawImage 直接複製像素，零延遲、零閃爍，且永遠與主圖同步。
+  //
+  // 【pointer-events:none 的作用】
+  //   overlay canvas 只做視覺呈現，不攔截滑鼠事件，
+  //   讓 tooltip 等互動功能穿透到底層主 canvas 正常運作。
+  const stickyYAxisPlugin = {
+    id: 'stickyYAxis',
+    afterDraw(chart) {
+      const overlay = document.getElementById('yAxisOverlay');
+      if (!overlay) return;
+      const { chartArea, scales } = chart;
+      if (!chartArea || !scales.y) return;
+
+      // chartArea.left = Y 軸總寬（刻度線 + 數字標籤 + 左側 padding）
+      const axisW = Math.ceil(chartArea.left);
+      const h     = chart.height;
+
+      // 更新 overlay canvas 的實際像素尺寸（與主 canvas 高度一致）
+      // 注意：每次都重設 width/height 是必要的，因為 retirementLinePlugin 可能改變高度
+      overlay.width        = axisW;
+      overlay.height       = h;
+      overlay.style.width  = axisW  + 'px';
+      overlay.style.height = h + 'px';
+
+      const octx = overlay.getContext('2d');
+      // Step 1：先用背景色填滿，蓋住任何舊的殘影（尤其是主 canvas 捲動後的殘留）
+      octx.fillStyle = '#0d1117';   // 與頁面背景色相同
+      octx.fillRect(0, 0, axisW, h);
+      // Step 2：從主 canvas 左側 (0,0)~(axisW,h) 複製到 overlay 的 (0,0)~(axisW,h)
+      // drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh) — 來源裁切 → 目標繪製
+      octx.drawImage(chart.canvas, 0, 0, axisW, h, 0, 0, axisW, h);
+    }
+  };
+
+  // 掛載自訂 plugin，銷毀舊圖表後重建（避免 canvas 衝突）
+  cfg.plugins = [retirementLinePlugin, stickyYAxisPlugin];
+  if (fireChart) fireChart.destroy();
+  fireChart = new Chart(canvas.getContext('2d'), cfg);
+  container.scrollLeft = savedScroll;                  // 還原捲動位置
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║            Google OAuth 2.0 + PKCE 授權流程              ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// ── 設定 Modal（CLIENT_ID / SHEET_ID）───────────────────────
+
+// 顯示 Google 設定彈窗，並預填 localStorage 中已有的值（方便修改）
+function showConfigModal() {
+  document.getElementById('config-client-id').value = getClientId();
+  document.getElementById('config-sheet-id').value  = getSheetId();
+  document.getElementById('config-modal').classList.add('show');
+  // 自動 focus 到第一個空白欄位
+  setTimeout(() => {
+    const el = getClientId() ? document.getElementById('config-sheet-id')
+                             : document.getElementById('config-client-id');
+    el.focus();
+  }, 50);
+}
+
+// 關閉設定彈窗
+function hideConfigModal() {
+  document.getElementById('config-modal').classList.remove('show');
+}
+
+// 儲存設定：驗證非空後存入 localStorage，繼續 OAuth 流程
+function confirmConfig() {
+  const cid = document.getElementById('config-client-id').value.trim();
+  const sid = document.getElementById('config-sheet-id').value.trim();
+  if (!cid) { document.getElementById('config-client-id').focus(); return; }
+  if (!sid) { document.getElementById('config-sheet-id').focus();  return; }
+  localStorage.setItem(LS.CLIENT_ID, cid);
+  localStorage.setItem(LS.SHEET_ID,  sid);
+  hideConfigModal();
+  startOAuth();  // 設定完成後立即繼續 OAuth 流程
+}
+
+// 從 sessionStorage 取得用戶端密鑰
+// 【安全設計】改用 sessionStorage（關閉分頁即清除），
+//   降低瀏覽器擴充套件或未來 XSS 竊取長效憑證的風險。
+//   代價：每次重新開啟分頁需再次輸入密鑰（約 10 秒操作）。
+function getSecret() { return sessionStorage.getItem(LS.SECRET) || ''; }
+
+// 檢查必要設定是否已填入（CLIENT_ID / SHEET_ID 均需有效長度）
+// 使用者首次連結 Google 時，由設定 Modal 引導輸入並存入 localStorage
+function isConfigured() {
+  return getClientId().length > 10 && getSheetId().length > 10;
+}
+
+// 將 Google 回傳的 token 分開存放
+// 【安全設計】access_token 存 sessionStorage → 關閉分頁即清除，大幅縮短竊取視窗
+//             refresh_token 存 localStorage  → 持久保存，讓使用者不需每天重新登入
+function saveTokens(t) {
+  t.expires_at = Date.now() + (t.expires_in ?? 3600) * 1000;  // 預設 1 小時後到期
+  // access_token → sessionStorage（短效、關分頁即消失）
+  sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+    access_token: t.access_token,
+    expires_at:   t.expires_at
+  }));
+  // refresh_token → localStorage（長效持久，用於自動換新 access_token）
+  if (t.refresh_token) {
+    localStorage.setItem(LS.REFRESH, t.refresh_token);
+  }
+}
+
+// 從 sessionStorage + localStorage 合併讀取 token
+// 回傳格式：{ access_token, expires_at, refresh_token }，兩者皆無則回傳 null
+function loadTokens() {
+  try {
+    const session = JSON.parse(sessionStorage.getItem(LS.TOKENS) || 'null');
+    const refresh = localStorage.getItem(LS.REFRESH);
+    if (!session?.access_token && !refresh) return null;
+    return {
+      access_token:  session?.access_token ?? null,
+      expires_at:    session?.expires_at   ?? 0,
+      refresh_token: refresh
+    };
+  } catch(e) { return null; }
+}
+
+// 清除所有 token 與密鑰（登出時使用）
+function clearTokens() {
+  sessionStorage.removeItem(LS.TOKENS);   // 清除 access_token
+  sessionStorage.removeItem(LS.SECRET);   // 清除 client_secret（已改存 sessionStorage）
+  localStorage.removeItem(LS.REFRESH);    // 清除 refresh_token
+  localStorage.removeItem(LS.PKCE);       // 清除 PKCE verifier
+}
+
+// 判斷目前是否已登入
+// 【邏輯】有 access_token 或 refresh_token 其中之一即視為已登入
+// 只有 refresh_token 時，getAccessToken() 會自動換新的 access_token
+function isAuthenticated() {
+  const t = loadTokens();
+  return !!(t?.access_token || t?.refresh_token);
+}
+
+// ── PKCE 工具函式 ────────────────────────────────────────────
+// 將 ArrayBuffer 轉為 Base64URL 格式（OAuth PKCE 規範要求）
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+
+// 產生隨機 code_verifier（32 bytes 隨機值轉 Base64URL）
+function genVerifier() {
+  return b64url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+// 對 verifier 做 SHA-256 雜湊，產生 code_challenge
+async function genChallenge(verifier) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return b64url(buf);
+}
+
+// ── Secret Modal 控制 ────────────────────────────────────────
+
+// 關閉密鑰輸入彈窗，並清空輸入欄
+function closeSecretModal() {
+  document.getElementById('secret-modal').classList.remove('show');
+  document.getElementById('secret-input').value = '';
+}
+
+// 確認輸入的密鑰：存入 sessionStorage 後自動繼續 OAuth 流程
+// sessionStorage 的生命週期與分頁綁定，關閉分頁即自動消失，
+// 比 localStorage 大幅縮短 CLIENT_SECRET 在瀏覽器中的暴露時間。
+function confirmSecret() {
+  const s = document.getElementById('secret-input').value.trim();
+  if (!s) { document.getElementById('secret-input').focus(); return; }
+  sessionStorage.setItem(LS.SECRET, s);
+  closeSecretModal();
+  startOAuth();  // 繼續走 OAuth 流程
+}
+
+// ── OAuth 授權啟動 ───────────────────────────────────────────
+
+// ── 啟動 Google OAuth 2.0 + PKCE 授權流程 ───────────────────
+// 【什麼是 PKCE？（Proof Key for Code Exchange）】
+//   傳統 OAuth 需要 client_secret 才能換取 token，但 SPA（單頁應用）
+//   無法安全儲存 secret（原始碼完全公開）。PKCE 解決了這個問題：
+//   1. 前端產生隨機 code_verifier（32 bytes）
+//   2. 對 verifier 做 SHA-256 → code_challenge（雜湊值）
+//   3. 授權請求附帶 code_challenge（雜湊後的值）
+//   4. 換 token 時附帶原始 code_verifier（Google 自行驗證雜湊）
+//   即使攻擊者攔截到 code，沒有 verifier 也無法換取 token。
+//
+// 【本 app 的額外安全層：client_secret 由使用者手動輸入並存於 localStorage】
+//   雖然 PKCE 不需要 client_secret，但 Google 的 Web 應用類型仍要求附帶。
+//   為避免洩露於 GitHub 原始碼，secret 僅在使用者首次連結時輸入並存在瀏覽器本地。
+//
+// 流程：
+//   1. 檢查 CLIENT_ID / SHEET_ID 已填入（非預設佔位字串）
+//   2. 若無 client_secret → 彈出輸入框請使用者輸入（輸入後繼續此流程）
+//   3. 產生 code_verifier（隨機）→ SHA-256 → code_challenge
+//   4. 跳轉至 Google 授權頁（帶上 challenge）
+//   5. 使用者同意後，Google 跳回本頁並帶 ?code=...
+//   6. handleOAuthCallback() 用 code + verifier 向 Google 換取 token
+async function startOAuth() {
+  if (!isConfigured()) {
+    showConfigModal();  // 引導使用者輸入 CLIENT_ID / SHEET_ID，完成後自動繼續
+    return;
+  }
+  // 尚未輸入密鑰時，顯示輸入彈窗
+  if (!getSecret()) {
+    document.getElementById('secret-modal').classList.add('show');
+    setTimeout(() => document.getElementById('secret-input').focus(), 50);
+    return;
+  }
+
+  // 產生 PKCE code_verifier（隨機），暫存於 localStorage
+  const verifier  = genVerifier();
+  const challenge = await genChallenge(verifier);
+  localStorage.setItem(LS.PKCE, verifier);
+
+  // 組合授權網址參數
+  const params = new URLSearchParams({
+    client_id:             getClientId(),
+    redirect_uri:          REDIRECT_URI,
+    response_type:         'code',
+    scope:                 'https://www.googleapis.com/auth/spreadsheets',  // 只申請 Sheets 權限
+    code_challenge:        challenge,
+    code_challenge_method: 'S256',  // PKCE 標準雜湊方法
+    access_type:           'offline',  // 取得 refresh_token 才能長期使用
+    prompt:                'consent'   // 強制顯示授權畫面（確保拿到 refresh_token）
+  });
+  // 跳轉到 Google 授權頁，使用者同意後 Google 會帶著 ?code=... 跳回本頁
+  window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+}
+
+// ── OAuth Callback 處理 ──────────────────────────────────────
+
+// Google 授權後跳回本頁，URL 帶有 ?code=...，此函式負責用 code 換取 token
+async function handleOAuthCallback(code) {
+  const verifier = localStorage.getItem(LS.PKCE);
+  if (!verifier) {
+    // PKCE verifier 遺失（可能換裝置或清除 localStorage）
+    showAlert('⚠ PKCE verifier 遺失，請重新點「連結 Google」再試。');
+    updateGoogleStatus();
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+  try {
+    // 向 Google token endpoint 交換 access_token + refresh_token
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    new URLSearchParams({
+        client_id:     getClientId(),
+        client_secret: getSecret(),   // 從 localStorage 讀取密鑰
+        code,
+        code_verifier: verifier,      // PKCE 驗證
+        grant_type:    'authorization_code',
+        redirect_uri:  REDIRECT_URI
+      })
+    });
+    const tokens = await res.json();
+    if (tokens.access_token) {
+      // 授權成功：儲存 token，清除 URL 中的 ?code=...，同步 Sheets 資料
+      saveTokens(tokens);
+      localStorage.removeItem(LS.PKCE);
+      window.history.replaceState({}, '', window.location.pathname);
+      updateGoogleStatus();
+      await syncFromSheets();
+    } else {
+      const msg = tokens.error_description ?? tokens.error ?? JSON.stringify(tokens);
+      showAlert('⚠ Google 授權失敗：' + msg);
+      console.error('OAuth token error:', tokens);
+      updateGoogleStatus();
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  } catch(e) {
+    showAlert('⚠ Google 授權錯誤：' + e.message);
+    console.error('OAuth callback exception:', e);
+    updateGoogleStatus();
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+}
+
+// ── Token 自動刷新 ───────────────────────────────────────────
+
+// ── 取得有效的 access_token（自動刷新機制）──────────────────
+// 【Google access_token 的生命週期】
+//   access_token 有效期約 1 小時（expires_in = 3600 秒）
+//   refresh_token 長期有效（使用者撤銷授權或長期未使用時才會失效）
+//
+// 【自動刷新流程】
+//   1. 讀取 sessionStorage 的 access_token 與 expires_at
+//   2. 若距到期 > 1 分鐘 → 直接回傳（有效）
+//   3. 若快到期或已到期 → 用 refresh_token 向 Google 換新的 access_token
+//   4. 若 refresh_token 也不存在或換新失敗 → 清除 token，提示重新登入
+//
+// 【1 分鐘提前刷新的原因】
+//   避免 token 在 API 請求途中才剛到期，造成請求失敗後才發現需要刷新的問題。
+async function getAccessToken() {
+  const t = loadTokens();
+  if (!t) return null;
+
+  // Token 還有超過 1 分鐘效期，直接回傳（不需刷新）
+  if (Date.now() < t.expires_at - 60000) return t.access_token;
+
+  // Token 即將到期（< 1 分鐘）或已過期，嘗試用 refresh_token 換新的
+  if (!t.refresh_token) { clearTokens(); updateGoogleStatus(); return null; }
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    new URLSearchParams({
+        client_id:     getClientId(),
+        client_secret: getSecret(),
+        refresh_token: t.refresh_token,
+        grant_type:    'refresh_token'
+      })
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      // 新 access_token 只存 sessionStorage（不異動 refresh_token）
+      sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+        access_token: data.access_token,
+        expires_at:   Date.now() + (data.expires_in ?? 3600) * 1000
+      }));
+      return data.access_token;
+    }
+  } catch(e) {}
+  // 刷新失敗 → 清除 token，需要重新登入
+  clearTokens(); updateGoogleStatus(); return null;
+}
+
+// ── Google 連結按鈕 ──────────────────────────────────────────
+
+// 點擊「連結 Google」按鈕：已登入則詢問是否登出，未登入則啟動 OAuth
+function handleGoogleBtn() {
+  if (isAuthenticated()) {
+    if (confirm('確定要取消連結 Google？快照將只儲存於本機。')) {
+      clearTokens();
+      updateGoogleStatus();
+    }
+  } else {
+    startOAuth();
+  }
+}
+
+// 根據目前登入狀態更新按鈕樣式和文字
+function updateGoogleStatus() {
+  const btn = document.getElementById('btn-google');
+  if (!isConfigured()) {
+    btn.className   = 'btn-google disconnected';
+    btn.textContent = '⚙ 點此完成初始設定';
+    return;
+  }
+  if (isAuthenticated()) {
+    btn.className   = 'btn-google connected';
+    btn.textContent = '✓ Google 已連結';
+  } else {
+    btn.className   = 'btn-google disconnected';
+    btn.textContent = '🔗 連結 Google';
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                Google Sheets API                         ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 讀取指定範圍的 Sheets 資料（GET）
+async function sheetsGet(range) {
+  const token = await getAccessToken();
+  if (!token) throw new Error('未授權');
+  const res = await fetch(`${getSheetsApi()}/values/${encodeURIComponent(range)}`, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  // 401 代表 token 失效，清除後請使用者重新登入
+  if (res.status === 401) { clearTokens(); updateGoogleStatus(); throw new Error('Token 已失效，請重新連結 Google'); }
+  return res.json();
+}
+
+// 在指定範圍後面新增一行資料（append）
+async function sheetsAppend(range, values) {
+  const token = await getAccessToken();
+  if (!token) throw new Error('未授權');
+  const res = await fetch(
+    `${getSheetsApi()}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    {
+      method:  'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ values })
+    }
+  );
+  if (res.status === 401) { clearTokens(); updateGoogleStatus(); throw new Error('Token 已失效，請重新連結 Google'); }
+  return res.json();
+}
+
+// 確保試算表第一行有欄位標題（首次使用時自動建立）
+async function ensureSheetHeader() {
+  try {
+    const data = await sheetsGet(`${SHEET_NAME}!A1:L1`);
+    if (data.values?.length) return;  // 已有標題，不重複建立
+    await sheetsAppend(`${SHEET_NAME}!A1`, [[
+      'timestamp','net_assets_twd',
+      'vt_shares','bnd_shares','tw0050_shares','tw006208_shares','auo_shares',
+      'cash_twd','mortgage_twd','months','usdtwd_rate','note'
+    ]]);
+  } catch(e) {}
+}
+
+// 將一筆快照寫入 Google Sheets
+async function appendSnapshotToSheets(h) {
+  await ensureSheetHeader();
+  const row = [
+    new Date().toISOString(),  // 時間戳記（ISO 格式）
+    h.net,                     // 淨資產（TWD）
+    h.vt, h.bnd, h.tw0050, h.tw006208, h.auo,  // 各標的持股數
+    h.cash, h.mortgage, h.months,               // 現金、房貸、剩餘期數
+    prices.usdtwd,             // 當時匯率
+    ''                         // 備注欄位（預留）
+  ];
+  await sheetsAppend(`${SHEET_NAME}!A:L`, [row]);
+}
+
+// 從 Google Sheets 讀取所有歷史快照，同步到本機
+async function syncFromSheets() {
+  try {
+    const data = await sheetsGet(`${SHEET_NAME}!A:L`);
+    const rows = (data.values ?? []).slice(1);  // 跳過第一行標題
+    if (!rows.length) return;
+    // 將每行原始字串轉換成結構化物件
+    // 使用 safeDate / safeNum 嚴格驗證每個欄位：
+    // 防止 Sheets 中的異常資料（手動輸入錯誤、惡意值）污染前端計算
+    snapshots = rows.map(r => ({
+      date:     safeDate(r[0]),                     // 嚴格 YYYY-MM-DD 格式驗證
+      net:      safeNum(r[1], -1e10, 1e10),         // 淨資產允許負值（負債大於資產）
+      vt:       safeNum(r[2], 0, 1e7),              // 股數
+      bnd:      safeNum(r[3], 0, 1e7),
+      tw0050:   safeNum(r[4], 0, 1e7),
+      tw006208: safeNum(r[5], 0, 1e7),
+      auo:      safeNum(r[6], 0, 1e7),
+      cash:     safeNum(r[7], 0, 1e10),             // 現金
+      mortgage: safeNum(r[8], 0, 1e10),             // 房貸餘額
+      months:   safeNum(r[9], 0, 600),              // 剩餘期數（最多 50 年）
+    })).filter(s => s.date && isFinite(s.net) && s.net !== 0);  // 過濾日期格式錯誤或零值
+    saveSnapshots();
+    renderSnapshots();
+    restoreLatestSnapshot();  // Sheets 可能有比本機更新的快照，同步後立即還原
+  } catch(e) {
+    showAlert('⚠ Google Sheets 讀取失敗：' + e.message);
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                  本機儲存（localStorage）                 ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 將目前輸入的持倉數量存入 localStorage（換頁或重整後自動還原）
+function saveHoldings() {
+  const h = getCurrentHoldings();
+  localStorage.setItem(LS.HOLDINGS, JSON.stringify(h));
+}
+
+// 從 localStorage 讀取上次儲存的持倉數量，填入輸入欄位
+// 套用 safeNum 確保損壞的快取不會填入 NaN 或異常值
+function loadHoldings() {
+  try {
+    const h = JSON.parse(localStorage.getItem(LS.HOLDINGS));
+    if (!h || typeof h !== 'object') return;
+    HOLDINGS_KEYS.forEach(k => {
+      const el = document.getElementById('f-' + k);
+      if (!el || h[k] == null) return;
+      if (k === 'months')                   el.value = safeNum(h[k], 0, 600);
+      else if (k === 'cash' || k === 'mortgage') el.value = safeNum(h[k], 0, 1e10);
+      else                                   el.value = safeNum(h[k], 0, 1e7);
+    });
+  } catch(e) {}
+}
+
+// 將快照陣列存入 localStorage（備份，Google Sheets 斷線時仍可查閱）
+function saveSnapshots() {
+  localStorage.setItem(LS.SNAPS, JSON.stringify(snapshots));
+}
+
+// 從 localStorage 讀取快照陣列
+// 重新驗證每筆資料：防止損壞的快取或被竄改的 localStorage 造成計算錯誤或 XSS
+function loadSnapshots() {
+  try {
+    const raw = localStorage.getItem(LS.SNAPS);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) { snapshots = []; return; }
+    snapshots = parsed
+      .filter(s => s && typeof s === 'object')
+      .map(s => ({
+        date:     safeDate(s.date),
+        net:      safeNum(s.net, -1e10, 1e10),
+        vt:       safeNum(s.vt, 0, 1e7),
+        bnd:      safeNum(s.bnd, 0, 1e7),
+        tw0050:   safeNum(s.tw0050, 0, 1e7),
+        tw006208: safeNum(s.tw006208, 0, 1e7),
+        auo:      safeNum(s.auo, 0, 1e7),
+        cash:     safeNum(s.cash, 0, 1e10),
+        mortgage: safeNum(s.mortgage, 0, 1e10),
+        months:   safeNum(s.months, 0, 600),
+      }))
+      .filter(s => s.date && isFinite(s.net) && s.net !== 0);
+  } catch(e) { snapshots = []; }
+}
+
+// 從最近一筆快照還原所有持倉輸入欄位
+// 每次開啟 app（本機快照）或從 Google Sheets 同步完成後自動呼叫
+// 邏輯：snapshots 陣列最後一筆即為最新紀錄（按時間順序排列）
+function restoreLatestSnapshot() {
+  if (!snapshots.length) return;  // 沒有任何快照則不動作
+
+  const latest = snapshots[snapshots.length - 1];
+
+  // 將最新快照的各欄位填回輸入框
+  HOLDINGS_KEYS.forEach(k => {
+    const el = document.getElementById('f-' + k);
+    if (el && latest[k] != null) el.value = latest[k];
+  });
+
+  saveHoldings();           // 同步更新 localStorage，維持一致性
+  if (pricesReady) refreshAll();  // 若報價已就緒，立即重算淨資產
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    快照操作                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 新增快照：計算當前淨資產 → 存本機 → 若已連結 Google 則同步到 Sheets
+async function addSnapshot() {
+  if (!pricesReady) {
+    showAlert('⚠ 報價尚未載入，請等候報價更新後再新增快照。');
+    return;
+  }
+  const h    = getCurrentHoldings();
+  h.date     = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+  h.net      = calcNet(h);
+  snapshots.push(h);
+  saveSnapshots();
+  renderSnapshots();
+
+  // 若已登入 Google，同步寫入 Sheets
+  if (isAuthenticated()) {
+    const btn = document.querySelector('.btn-save');
+    btn.textContent = '⏳ 同步中…'; btn.disabled = true;
+    try {
+      await appendSnapshotToSheets(h);
+      btn.textContent = '✓ 已儲存至 Sheets';
+      setTimeout(() => { btn.textContent = '💾 新增快照'; btn.disabled = false; }, 2000);
+    } catch(e) {
+      btn.textContent = '💾 新增快照'; btn.disabled = false;
+      showAlert('⚠ Sheets 寫入失敗（本機已儲存）：' + e.message);
+    }
+  }
+}
+
+// 刪除指定索引的快照（僅刪除本機，Sheets 資料需手動刪除）
+function deleteSnapshot(i) {
+  snapshots.splice(i, 1);
+  saveSnapshots();
+  renderSnapshots();
+}
+
+// 渲染歷史快照列表（最新的排在最上面）
+function renderSnapshots() {
+  const el = document.getElementById('snapshotList');
+  if (!snapshots.length) {
+    el.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:10px">尚無快照，填入持倉後點「新增快照」</div>';
+  } else {
+    // reverse() 讓最新的顯示在最上方，但不改變原陣列（使用展開運算符複製）
+    el.innerHTML = [...snapshots].reverse().map((s, ri) => {
+      const i = snapshots.length - 1 - ri;  // 計算在原陣列中的索引（供刪除使用）
+      return `
+      <div class="snapshot-item">
+        <div>
+          <div class="snap-date">${s.date}</div>
+          <div class="snap-val">NT$ ${fmt(s.net)}</div>
+        </div>
+        <div style="font-size:11px;color:#8b949e;line-height:1.7">
+          VT ${s.vt} / BND ${s.bnd}<br>
+          0050 ${s.tw0050} / 006208 ${s.tw006208} / 友達 ${s.auo}<br>
+          現金 ${fmtW(s.cash)}
+        </div>
+        <button class="snap-del" data-idx="${i}">✕</button>
+      </div>`;
+    }).join('');
+  }
+  refreshAll();
+}
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    模擬參數滑桿                           ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 為四個滑桿綁定 input 事件：滑動時即時更新顯示值並重繪圖表
+[
+  ['sl-monthly',  'sv-monthly',  v => Number(v).toLocaleString()],  // 每月投入，加千分位
+  ['sl-return',   'sv-return',   v => v],                           // 年化報酬率，直接顯示
+  ['sl-withdraw', 'sv-withdraw', v => v],                           // 提領率，直接顯示
+  ['sl-target',   'sv-target',   v => Number(v).toLocaleString()],  // 目標資產，加千分位
+].forEach(([sid, vid, fmt]) => {
+  const sl = document.getElementById(sid);
+  const sv = document.getElementById(vid);
+  sl.addEventListener('input', () => { sv.textContent = fmt(sl.value); refreshAll(); });
+});
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║                    自訂欄位                               ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// 自訂欄位計數器（確保每個 DOM 元素 ID 唯一）
+let cCount = 0;
+function addCustomField() {
+  cCount++;
+  const div = document.createElement('div');
+  div.className = 'custom-asset-row'; div.id = 'cf-' + cCount;
+  div.innerHTML = `
+    <div class="input-group"><label>標的名稱</label><input type="text" placeholder="e.g. 台積電"></div>
+    <div class="input-group"><label>數量 / 金額</label><input type="number" placeholder="0"></div>
+    <button class="btn-remove-row">✕</button>`;
+  document.getElementById('customFields').appendChild(div);
+}
+
+// ── CLOCK ──────────────────────────────────────────────────
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleString('zh-TW', {
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+  }).replace(/\//g, '-');
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── INIT ───────────────────────────────────────────────────
+(async function init() {
+
+  // ── 舊版 token 格式遷移（v1 → v2）───────────────────────────
+  // v1 版本將 access_token + refresh_token 全存在 localStorage['wd_tokens']
+  // v2 起改為分離：access_token → sessionStorage，refresh_token → localStorage
+  // 此段確保舊裝置升級後不需重新登入
+  const legacyToken = localStorage.getItem(LS.TOKENS);
+  if (legacyToken) {
+    try {
+      const t = JSON.parse(legacyToken);
+      if (t.refresh_token) localStorage.setItem(LS.REFRESH, t.refresh_token);
+      if (t.access_token)  sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+        access_token: t.access_token,
+        expires_at:   t.expires_at ?? 0
+      }));
+    } catch(e) {}
+    localStorage.removeItem(LS.TOKENS);  // 清除舊格式，完成遷移
+  }
+
+  // ── CLIENT_SECRET 遷移（v2 → v3）────────────────────────────
+  // v2 版本將 CLIENT_SECRET 存在 localStorage（安全疑慮：擴充套件可永久讀取）
+  // v3 起改為 sessionStorage（關分頁即清除），降低長效憑證外洩風險
+  // 遷移策略：將殘留值搬到 sessionStorage（讓本次 session 不需重新輸入），
+  //           然後從 localStorage 刪除（消除永久駐留的安全風險）
+  const legacySecret = localStorage.getItem(LS.SECRET);
+  if (legacySecret) {
+    sessionStorage.setItem(LS.SECRET, legacySecret);  // 搬到 session（本次可繼續用）
+    localStorage.removeItem(LS.SECRET);               // 從 localStorage 永久刪除
+    console.info('[security] CLIENT_SECRET 已從 localStorage 遷移至 sessionStorage ✓');
+  }
+
+  // 載入順序：先快照 → 若有快照則從最新快照還原持倉；無快照才用舊的 savedHoldings
+  loadSnapshots();
+  if (snapshots.length) {
+    restoreLatestSnapshot();   // 有快照：從最新快照填入欄位（不依賴 savedHoldings）
+  } else {
+    loadHoldings();            // 無快照：退回到上次手動儲存的持倉（初次使用）
+  }
+  updateGoogleStatus();
+
+  // ── 事件綁定：必須在所有可能拋出例外的操作「之前」完成 ──────
+  // 【為什麼順序很重要？】
+  //   init() 是 async 函式，若 refreshAll() 或 drawFireChart() 拋出例外，
+  //   例外之後的程式碼都不會執行。若事件綁定排在後面，
+  //   任何一個錯誤都會導致所有按鈕失效——頁面看起來正常，但完全沒有反應。
+  //   因此事件綁定必須放在最前面，即使後續出錯，按鈕依然可用。
+  document.getElementById('btn-google')          .addEventListener('click', handleGoogleBtn);
+  // 設定 Modal 按鈕（CLIENT_ID / SHEET_ID）
+  document.getElementById('config-cancel')       .addEventListener('click', hideConfigModal);
+  document.getElementById('config-confirm')      .addEventListener('click', confirmConfig);
+  document.getElementById('secret-cancel')       .addEventListener('click', closeSecretModal);
+  document.getElementById('secret-confirm')      .addEventListener('click', confirmSecret);
+  // 報價錯誤 Modal 按鈕
+  document.getElementById('quote-error-close-x') .addEventListener('click', hideQuoteErrorModal);
+  document.getElementById('quote-error-close')   .addEventListener('click', hideQuoteErrorModal);
+  document.getElementById('quote-error-retry')   .addEventListener('click', () => {
+    hideQuoteErrorModal();
+    fetchQuotes();  // 重新執行三層備援流程
+  });
+  document.getElementById('btn-save-snapshot').addEventListener('click', addSnapshot);
+  document.getElementById('btn-add-field')  .addEventListener('click', addCustomField);
+
+  document.getElementById('snapshotList').addEventListener('click', e => {
+    const btn = e.target.closest('.snap-del');
+    if (!btn) return;
+    const i = parseInt(btn.dataset.idx, 10);
+    if (!isNaN(i)) deleteSnapshot(i);
+  });
+
+  document.getElementById('customFields').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-remove-row');
+    if (btn) btn.closest('.custom-asset-row').remove();
+  });
+
+  HOLDINGS_KEYS.forEach(k => {
+    document.getElementById('f-' + k).addEventListener('input', () => {
+      saveHoldings();
+      if (pricesReady) { try { refreshAll(); } catch(e) { console.error('refreshAll:', e); } }
+    });
+  });
+
+  // ── 從快取報價立即顯示（refreshAll 包 try-catch 避免圖表錯誤中斷後續流程）
+  const cached = loadPricesCache();
+  if (cached?.prices) {
+    Object.assign(prices, cached.prices);
+    Object.assign(changes, cached.changes ?? {});
+    pricesReady = true;
+    setQuoteStatus('cached', cached.time);
+    updateQuoteTable();
+    try { refreshAll(); } catch(e) { console.error('refreshAll (cached):', e); }
+  }
+
+  renderSnapshots();
+
+  // Handle OAuth callback (Google redirects back with ?code=...)
+  const urlParams = new URLSearchParams(window.location.search);
+  const oauthCode = urlParams.get('code');
+  if (oauthCode) {
+    const btn = document.getElementById('btn-google');
+    btn.className = 'btn-google loading';
+    btn.textContent = '⏳ 授權中…';
+    await handleOAuthCallback(oauthCode);
+  } else if (isAuthenticated()) {
+    syncFromSheets();
+  }
+
+  // Fetch live quotes（每 5 分鐘自動更新）
+  fetchQuotes();
+  setInterval(fetchQuotes, QUOTE_REFRESH_MS);
+
+  // 抓取歷史年化報酬參考資料（背景非同步，不阻塞頁面）
+  fetchHistoricalReturns().then(data => {
+    if (!data) return;
+    returnRefData = data;
+    renderReturnRef(data);
+  });
+})();
+</script>
+</body>
+</html>
