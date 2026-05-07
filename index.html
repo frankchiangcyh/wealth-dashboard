@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-GaSwFbTd8ZZ1qZTYERFU9V8FUOaYds/jvV9yvpXLMFPbudAQyHR+ubllxavzoNFz';
+               script-src 'self' cdn.jsdelivr.net 'sha384-BeWgSd944wCglrkFEh1rpbiRsxggi3yzvWiBEKBteLRtrFESj/vr3v3UWi3XUIs4';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -2465,7 +2465,7 @@ function hideLockScreen() {
 // 鎖定 App：清除解鎖旗標、停止閒置計時器、顯示鎖定層
 function lockApp() {
   sessionStorage.removeItem(LS.UNLOCKED);
-  typeof stopIdleWatch === 'function' && stopIdleWatch();
+  stopIdleWatch();
   showLockScreen();
 }
 
@@ -2473,7 +2473,7 @@ function lockApp() {
 function unlockApp() {
   sessionStorage.setItem(LS.UNLOCKED, '1');
   hideLockScreen();
-  typeof startIdleWatch === 'function' && startIdleWatch();
+  startIdleWatch();
   init();  // 第二次執行時 isUnlocked()=true，跳過鎖定檢查，繼續完整初始化
 }
 
