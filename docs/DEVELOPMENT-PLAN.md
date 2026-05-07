@@ -1,6 +1,6 @@
 # 資產戰情室 — 開發計畫書
 
-> 版本：1.2｜更新日期：2026-05-07｜架構：單一 index.html，無後端
+> 版本：1.3｜更新日期：2026-05-07｜架構：單一 index.html，無後端
 
 ---
 
@@ -394,6 +394,25 @@ Step 3  建立 GitHub Private Repo
 | [x] | _check.js 測試 | testLockScreen：hashPassword / isLockEnabled / isUnlocked 共 10 項 |
 
 **驗收標準**：首次使用設定密碼 → 儀表板正常顯示；關分頁重開需重新輸入密碼；🔒 按鈕立即鎖定；閒置 30 分鐘自動鎖定；`window._runChecks()` 全部通過。
+
+---
+
+### Phase 10：退休模擬圖修正 ✅ 完成（2026-05-07）
+
+| 狀態 | 項目 | 說明 |
+|------|------|------|
+| [x] | 新增快照後自動捲動 | `addSnapshot()` 呼叫 `scrollChartToLatestSnapshot()`，新增後立即捲到今天位置 |
+| [x] | 藍線起點改為今天 | `dsAccum[0]` 從 `lastSnap.date` 改為今天（`todayFrac`），語意與卡片一致 |
+| [x] | 藍線起點值改為即時淨資產 | `startNet` 優先使用 `calcNet(getCurrentHoldings())`，而非舊快照值 |
+| [x] | 首次繪圖自動捲到今天 | `fireChartLivePricesShown` 旗標：有即時報價的首次繪圖才捲到今天，避免報價未就緒時顯示錯誤位置 |
+| [x] | `scrollChartToLatestSnapshot` 改為捲到今天 | 因藍線起點已改為今天，快照新增後捲到今天才合理 |
+| [x] | startNet 從卡片 DOM 讀取（最終方案） | `drawFireChart()` 直接解析 `#display-net` 文字，與卡片零落差保證一致 |
+
+**根本原因**：`drawFireChart()` 與 `refreshAll()` 各自獨立呼叫 `calcNet()`，在特定時序（報價快取存在但第二次 refreshAll 為 null）會得到不同結果，導致卡片正確但圖表顯示舊快照值。
+
+**最終架構**：`refreshAll()` 先更新卡片文字 → `drawFireChart()` 從 `#display-net` DOM 讀取數字作為 `startNet`，完全避開重算時序問題。
+
+**驗收標準**：卡片顯示 NT$ X，圖表藍線起點 = X；新增快照後圖表自動捲到今天並顯示模擬起點。
 
 ---
 

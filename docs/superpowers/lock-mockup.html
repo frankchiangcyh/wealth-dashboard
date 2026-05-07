@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lock Screen Mockup</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0d1117; color:#e6edf3; font-family:'Segoe UI',system-ui,sans-serif; }
+
+/* ── TABS ─────────────────────────────── */
+.tabs { display:flex; gap:8px; padding:16px 24px 0; border-bottom:1px solid #21262d; }
+.tab {
+  padding:8px 20px; border-radius:8px 8px 0 0; font-size:14px; cursor:pointer;
+  background:#161b22; border:1px solid #30363d; border-bottom:none; color:#8b949e;
+}
+.tab.active { background:#0d1117; color:#e6edf3; border-color:#58a6ff; }
+
+/* ── PANELS ───────────────────────────── */
+.panel { display:none; }
+.panel.active { display:block; }
+
+/* ══════════════════════════════════════
+   LOCK SCREEN — 全頁層
+══════════════════════════════════════ */
+.lock-screen {
+  position:fixed; inset:0;
+  background:#0d1117;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  z-index:9999;
+}
+
+.lock-logo {
+  font-size:36px; font-weight:700; color:#58a6ff;
+  letter-spacing:2px; margin-bottom:6px;
+}
+.lock-subtitle {
+  font-size:14px; color:#8b949e; margin-bottom:40px;
+}
+
+.lock-box {
+  background:#161b22; border:1px solid #30363d;
+  border-radius:16px; padding:36px 40px;
+  width:360px; box-shadow:0 8px 40px rgba(0,0,0,0.5);
+}
+
+.lock-icon {
+  text-align:center; font-size:40px; margin-bottom:16px;
+}
+.lock-box h2 {
+  text-align:center; font-size:18px; color:#e6edf3;
+  margin-bottom:6px;
+}
+.lock-box .lock-desc {
+  text-align:center; font-size:13px; color:#8b949e;
+  margin-bottom:24px; line-height:1.6;
+}
+
+.lock-input-wrap { position:relative; margin-bottom:16px; }
+.lock-input {
+  width:100%; background:#0d1117; border:1px solid #30363d;
+  border-radius:8px; padding:12px 44px 12px 14px;
+  color:#e6edf3; font-size:16px; outline:none;
+  transition:border-color 0.2s;
+}
+.lock-input:focus { border-color:#58a6ff; }
+.lock-input::placeholder { color:#484f58; }
+.lock-eye {
+  position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  background:none; border:none; color:#8b949e; cursor:pointer; font-size:16px;
+  padding:2px 4px;
+}
+.lock-eye:hover { color:#e6edf3; }
+
+.lock-btn {
+  width:100%; padding:12px; background:#1f6feb; color:#fff;
+  border:none; border-radius:8px; font-size:16px; font-weight:600;
+  cursor:pointer; transition:background 0.2s; margin-bottom:12px;
+}
+.lock-btn:hover { background:#388bfd; }
+
+.lock-error {
+  background:#2a1215; border:1px solid #f85149;
+  color:#f85149; font-size:13px; padding:8px 12px;
+  border-radius:6px; text-align:center; margin-bottom:12px;
+}
+.lock-error.hidden { display:none; }
+
+.lock-hint {
+  text-align:center; font-size:12px; color:#484f58; line-height:1.6;
+}
+
+/* ── First-time setup 分隔線 ─────────── */
+.lock-divider {
+  display:flex; align-items:center; gap:10px;
+  margin:20px 0;
+}
+.lock-divider::before, .lock-divider::after {
+  content:''; flex:1; height:1px; background:#21262d;
+}
+.lock-divider span { font-size:12px; color:#484f58; white-space:nowrap; }
+
+/* ── HEADER MOCKUP ────────────────────── */
+.header-mockup {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:16px 24px; border-bottom:1px solid #21262d;
+  background:#0d1117;
+}
+.header-mockup h1 { font-size:24px; color:#58a6ff; letter-spacing:2px; }
+.header-right { display:flex; align-items:center; gap:10px; }
+.btn-lock {
+  display:flex; align-items:center; gap:5px;
+  padding:7px 14px; border-radius:6px; font-size:14px; font-weight:600;
+  cursor:pointer; border:1px solid #30363d; background:#21262d;
+  color:#8b949e; transition:all 0.2s;
+}
+.btn-lock:hover { border-color:#f85149; color:#f85149; background:#2a1215; }
+.btn-google-mock {
+  padding:7px 14px; border-radius:6px; font-size:14px; font-weight:600;
+  background:#1a3a1a; border:1px solid #3fb950; color:#3fb950;
+}
+.clock-mock { font-size:14px; color:#8b949e; }
+
+.dashboard-blur {
+  filter:blur(8px); opacity:0.3; pointer-events:none;
+  padding:20px 24px;
+}
+.mock-card-row { display:flex; gap:16px; margin-bottom:16px; }
+.mock-card {
+  flex:1; background:#161b22; border:1px solid #21262d;
+  border-radius:12px; padding:20px; height:100px;
+}
+.mock-card-tall { height:140px; }
+.mock-label { font-size:12px; color:#8b949e; margin-bottom:8px; }
+.mock-val { font-size:28px; font-weight:700; color:#58a6ff; }
+.mock-sub { font-size:13px; color:#3fb950; margin-top:4px; }
+
+/* 鎖定層 overlay（蓋在模糊內容上） */
+.lock-overlay-demo {
+  position:relative; overflow:hidden; border:1px solid #21262d; border-radius:8px;
+}
+.lock-overlay-panel {
+  position:absolute; inset:0;
+  background:rgba(13,17,23,0.85);
+  display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(4px);
+}
+.lock-center-msg {
+  text-align:center;
+}
+.lock-center-msg .icon { font-size:48px; margin-bottom:12px; }
+.lock-center-msg p { color:#8b949e; font-size:14px; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('tab-first')">首次設定密碼</div>
+  <div class="tab" onclick="showTab('tab-unlock')">解鎖畫面（正常）</div>
+  <div class="tab" onclick="showTab('tab-error')">解鎖畫面（密碼錯誤）</div>
+  <div class="tab" onclick="showTab('tab-header')">Header 鎖定按鈕</div>
+  <div class="tab" onclick="showTab('tab-idle')">閒置自動鎖定</div>
+</div>
+
+<!-- ① 首次設定密碼 -->
+<div class="panel active" id="tab-first">
+  <div style="position:relative;height:calc(100vh - 46px);">
+    <div class="lock-screen" style="position:absolute;">
+      <div class="lock-logo">⚡ 資產戰情室</div>
+      <div class="lock-subtitle">個人退休資產追蹤儀表板</div>
+      <div class="lock-box">
+        <div class="lock-icon">🔐</div>
+        <h2>設定解鎖密碼</h2>
+        <div class="lock-desc">
+          首次使用需設定密碼。<br>
+          密碼僅在你的瀏覽器本地驗證，<br>不會傳送至任何伺服器。
+        </div>
+        <div class="lock-input-wrap">
+          <input class="lock-input" type="password" placeholder="設定密碼" value="••••••••">
+          <button class="lock-eye">👁</button>
+        </div>
+        <div class="lock-input-wrap" style="margin-bottom:20px;">
+          <input class="lock-input" type="password" placeholder="再次輸入確認" value="••••••••">
+          <button class="lock-eye">👁</button>
+        </div>
+        <button class="lock-btn">設定並進入儀表板</button>
+        <div class="lock-hint">
+          密碼以 SHA-256 雜湊儲存於 localStorage<br>
+          忘記密碼？清除 localStorage 後重新設定
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ② 正常解鎖 -->
+<div class="panel" id="tab-unlock">
+  <div style="position:relative;height:calc(100vh - 46px);">
+    <div class="lock-screen" style="position:absolute;">
+      <div class="lock-logo">⚡ 資產戰情室</div>
+      <div class="lock-subtitle">個人退休資產追蹤儀表板</div>
+      <div class="lock-box">
+        <div class="lock-icon">🔒</div>
+        <h2>輸入密碼解鎖</h2>
+        <div class="lock-desc">儀表板已鎖定。輸入密碼繼續。</div>
+        <div class="lock-error hidden">密碼錯誤，請再試一次</div>
+        <div class="lock-input-wrap" style="margin-bottom:20px;">
+          <input class="lock-input" type="password" placeholder="輸入密碼" autofocus>
+          <button class="lock-eye">👁</button>
+        </div>
+        <button class="lock-btn">🔓 解鎖</button>
+        <div class="lock-hint">
+          按 Enter 可直接解鎖<br>
+          忘記密碼？清除 localStorage 後重新設定
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 密碼錯誤 -->
+<div class="panel" id="tab-error">
+  <div style="position:relative;height:calc(100vh - 46px);">
+    <div class="lock-screen" style="position:absolute;">
+      <div class="lock-logo">⚡ 資產戰情室</div>
+      <div class="lock-subtitle">個人退休資產追蹤儀表板</div>
+      <div class="lock-box">
+        <div class="lock-icon">🔒</div>
+        <h2>輸入密碼解鎖</h2>
+        <div class="lock-desc">儀表板已鎖定。輸入密碼繼續。</div>
+        <div class="lock-error">⚠ 密碼錯誤，請再試一次</div>
+        <div class="lock-input-wrap" style="margin-bottom:20px;margin-top:4px;">
+          <input class="lock-input" type="password" placeholder="輸入密碼" style="border-color:#f85149;">
+          <button class="lock-eye">👁</button>
+        </div>
+        <button class="lock-btn">🔓 解鎖</button>
+        <div class="lock-hint">
+          按 Enter 可直接解鎖<br>
+          忘記密碼？清除 localStorage 後重新設定
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ④ Header 鎖定按鈕 -->
+<div class="panel" id="tab-header">
+  <div style="padding:24px;">
+    <p style="font-size:13px;color:#8b949e;margin-bottom:16px;">🔒 按鈕加在 Header 右側，hover 時變紅色。</p>
+    <div class="header-mockup">
+      <h1>⚡ 資產戰情室</h1>
+      <div class="header-right">
+        <button class="btn-google-mock">✅ 已連結 Google</button>
+        <div style="display:flex;align-items:center;gap:5px;font-size:14px;color:#8b949e;">
+          <span style="width:8px;height:8px;background:#3fb950;border-radius:50%;display:inline-block;"></span>
+          報價即時
+        </div>
+        <div class="clock-mock">2026-05-07 14:32:55</div>
+        <button class="btn-lock">🔒 鎖定</button>
+      </div>
+    </div>
+    <p style="font-size:13px;color:#8b949e;margin-top:16px;">閒置 30 分鐘後，也會自動觸發相同的鎖定畫面。</p>
+  </div>
+</div>
+
+<!-- ⑤ 閒置鎖定 overlay -->
+<div class="panel" id="tab-idle">
+  <div style="padding:24px;">
+    <p style="font-size:13px;color:#8b949e;margin-bottom:16px;">閒置 30 分鐘後，畫面覆蓋鎖定層（頁面本身仍存在於 DOM，但不可見）。</p>
+    <div class="lock-overlay-demo">
+      <!-- 底下的模糊儀表板 -->
+      <div class="dashboard-blur">
+        <div class="header-mockup" style="padding:12px 16px;">
+          <h1 style="font-size:18px;">⚡ 資產戰情室</h1>
+          <div class="header-right">
+            <div class="clock-mock">2026-05-07 14:32:55</div>
+          </div>
+        </div>
+        <div class="mock-card-row" style="padding-top:12px;">
+          <div class="mock-card mock-card-tall">
+            <div class="mock-label">當前淨資產</div>
+            <div class="mock-val">NT$ 8,420,000</div>
+            <div class="mock-sub">▲ +142,000</div>
+          </div>
+          <div class="mock-card mock-card-tall">
+            <div class="mock-label">4% 法則提領</div>
+            <div class="mock-val">336,800</div>
+            <div class="mock-sub">每年可領</div>
+          </div>
+          <div class="mock-card mock-card-tall">
+            <div class="mock-label">進度</div>
+            <div class="mock-val">28.1%</div>
+          </div>
+        </div>
+      </div>
+      <!-- 鎖定層 -->
+      <div class="lock-overlay-panel">
+        <div class="lock-center-msg">
+          <div class="icon">🔒</div>
+          <div style="font-size:18px;font-weight:700;color:#e6edf3;margin-bottom:8px;">閒置已超過 30 分鐘</div>
+          <p>儀表板已自動鎖定</p>
+          <button class="lock-btn" style="margin-top:20px;width:200px;">輸入密碼解鎖</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showTab(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>
