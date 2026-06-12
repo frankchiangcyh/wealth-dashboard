@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-j95i2UZg1khzGH8qG3popyXG5dIpNNeb4lIdtHVp2w0vt6swjaurDuTxlJsXsL2F';
+               script-src 'self' cdn.jsdelivr.net 'sha384-3Uiii801xRc+dXnbdhYuO5t0lzcvxj/8y8Jfbq0PE0Arp9iycvCiXeERPiwvK7jl';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -591,7 +591,7 @@ const HOLDINGS_KEYS = ['vt','bnd','tw0050','tw006208','auo','cash','mortgage','m
 const LS = {
   HOLDINGS:  'wd_holdings',       // localStorage:    持倉數量（股數、現金、房貸）
   SNAPS:     'wd_snapshots',      // localStorage:    歷史快照列表
-  PRICES:    'wd_prices',         // localStorage:    報價快取（離線時使用）
+  PRICES:    'wd_prices_v2',      // localStorage:    報價快取（離線時使用；v2 修掉 Stooq 前收 bug，舊 v1 自動失效）
   TOKENS:    'wd_tokens',         // sessionStorage:  access_token（關閉分頁自動清除）
   REFRESH:   'wd_refresh_token',  // localStorage:    refresh_token（持久，供自動換 token）
   PKCE:      'wd_pkce',           // localStorage:    PKCE 驗證用的 code_verifier（暫存）
@@ -894,6 +894,9 @@ async function tryFetchText(url, ms = 9000) {
 // 解析 Stooq.com CSV 格式
 // URL 參數 f=sd2t2ohlcv → 欄位順序：Symbol,Date,Time,Open,High,Low,Close,Volume
 // 回傳 { price, prevClose } 或 null（空字串/N/D 無資料 → null）
+// 註：Stooq 單日 CSV 只有「同日」OHLC，沒有真正的前一交易日收盤；
+//     用同日 open 當前收會把「盤中漲跌」誤標成「日漲幅」，已改為 null
+//     → applyTickerData 會直接跳過 changes[key]，該支不顯示百分比
 function parseStooqCSV(text) {
   if (!text || !text.trim()) return null;
   const lines = text.trim().split('\n');
@@ -901,14 +904,12 @@ function parseStooqCSV(text) {
   const cols  = lines[1].split(',');
   // 欄位索引（0-based）：0=Symbol, 1=Date, 2=Time, 3=Open, 4=High, 5=Low, 6=Close, 7=Volume
   const closeStr = (cols[6] ?? '').trim();
-  const openStr  = (cols[3] ?? '').trim();
   if (closeStr === 'N/D' || closeStr === '' ) return null; // Stooq 無資料標記
   const close = parseFloat(closeStr);
-  const open  = parseFloat(openStr);
   if (!isFinite(close) || close <= 0) return null;
   return {
     price:     close,
-    prevClose: (isFinite(open) && open > 0) ? open : close  // 用開盤價估算前收
+    prevClose: null  // 同日 open 不是真前收，回傳 null 讓上層不顯示百分比
   };
 }
 
@@ -988,11 +989,31 @@ function hideQuoteErrorModal() {
 
 // 用 v8 chart API 抓取單一股票現價
 // 使用 1d/5d 取得最即時的日線資料；tryFetch 會自動處理 gzip 解壓
+// 回傳 { price, prevClose } 或 null
+//   prevClose 取 indicators.quote[0].close 倒數第二根 K 線（真正的前一交易日收盤）；
+//   indicators 缺值時退回 meta.chartPreviousClose（在連假/盤前後可能跳針，但聊勝於無）
 async function fetchOneTicker(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
-  const json = await tryFetch(url);
-  const meta = json?.chart?.result?.[0]?.meta;
-  return (meta?.regularMarketPrice) ? meta : null;
+  const url    = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+  const json   = await tryFetch(url);
+  const result = json?.chart?.result?.[0];
+  const meta   = result?.meta;
+  const price  = meta?.regularMarketPrice;
+  if (!price) return null;
+  // 從日線 close 陣列由後往前找：第 1 根有效 close = 今天，第 2 根 = 前一交易日
+  let prevClose = null;
+  const closes  = result?.indicators?.quote?.[0]?.close;
+  if (Array.isArray(closes)) {
+    let skipped = false;
+    for (let i = closes.length - 1; i >= 0; i--) {
+      const c = closes[i];
+      if (c == null || !isFinite(c) || c <= 0) continue;
+      if (!skipped) { skipped = true; continue; }   // 跳過今天的 close
+      prevClose = c;
+      break;
+    }
+  }
+  if (prevClose == null) prevClose = meta.chartPreviousClose ?? null;
+  return { price, prevClose };
 }
 
 // ── 主要報價抓取流程（三層瀑布備援）──
@@ -1017,15 +1038,13 @@ async function fetchQuotes() {
   // ══ Layer 1：Yahoo Finance v8 chart API（主要來源）══
   console.group('[quotes] Layer 1: Yahoo Finance v8');
   const yahooResults = await Promise.all(
-    [...missing].map(async sym => ({ sym, meta: await fetchOneTicker(sym) }))
+    [...missing].map(async sym => ({ sym, data: await fetchOneTicker(sym) }))
   );
-  yahooResults.forEach(({ sym, meta }) => {
-    if (meta?.regularMarketPrice) {
-      // v8 meta 含 chartPreviousClose（前一交易日收盤），用來計算漲跌幅
-      applyTickerData(sym, meta.regularMarketPrice,
-        meta.chartPreviousClose ?? meta.regularMarketPrice);
+  yahooResults.forEach(({ sym, data }) => {
+    if (data?.price) {
+      applyTickerData(sym, data.price, data.prevClose);
       missing.delete(sym);
-      console.info(`[quotes] L1 ✓ ${sym} = ${meta.regularMarketPrice}`);
+      console.info(`[quotes] L1 ✓ ${sym} = ${data.price} (prev=${data.prevClose})`);
     } else {
       console.warn(`[quotes] L1 ✗ ${sym} 無資料`);
     }
