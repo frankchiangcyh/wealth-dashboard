@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-3Uiii801xRc+dXnbdhYuO5t0lzcvxj/8y8Jfbq0PE0Arp9iycvCiXeERPiwvK7jl';
+               script-src 'self' cdn.jsdelivr.net 'sha384-17/Zh4QKNho5Z257zn/xfogu4D+PArHD+AdMsRty+xaL0vdJiCIG+CxC/Ci0RpnU';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -96,8 +96,9 @@ body {
 .asset-table td { padding:10px 0; font-size:17px; border-bottom:1px solid #21262d; vertical-align:middle; }
 .asset-table tr:last-child td { border-bottom:none; }
 .ticker { font-weight:600; color:#58a6ff; }
-.price-up   { color:#3fb950; }
-.price-down { color:#f85149; }
+/* 漲跌色：台/亞慈漲紅跌綠（不跟隨歐美素顆色）*/
+.price-up   { color:#f85149; }
+.price-down { color:#3fb950; }
 .price-neu  { color:#8b949e; }
 .text-right { text-align:right; }
 
@@ -1215,9 +1216,9 @@ function renderReturnRef(data) {
   const fmtPct = v => v == null ? '—'
     : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
   const col = v => v == null ? '#6e7681'
-    : v >= 0.05 ? '#3fb950'   // > 5% 綠
+    : v >= 0.05 ? '#f85149'   // > 5% 紅（台慈漲紅）
     : v >= 0    ? '#d29922'   // 0~5% 黃
-    : '#f85149';              // 負值紅
+    : '#3fb950';              // 負值綠（台慈跌綠）
 
   // ── 逐標的渲染 ──────────────────────────────────────────────
   const names = { 'VT':'VT', 'BND':'BND', '0050.TW':'0050', '006208.TW':'006208' };
@@ -1349,7 +1350,7 @@ function refreshAll() {
     const lastSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
     const diff     = lastSnap ? net - lastSnap.net : null;
     const arrow    = diff !== null ? (diff >= 0 ? '▲' : '▼') : '';
-    const col      = diff !== null ? (diff >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+    const col      = diff !== null ? (diff >= 0 ? '#f85149' : '#3fb950') : '#8b949e';
     const pct      = (diff !== null && lastSnap?.net) ? ((diff / lastSnap.net) * 100).toFixed(2) : null;
 
     // 更新淨資產數值
