@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-17/Zh4QKNho5Z257zn/xfogu4D+PArHD+AdMsRty+xaL0vdJiCIG+CxC/Ci0RpnU';
+               script-src 'self' cdn.jsdelivr.net 'sha384-gd5UxNrLN+8XylUtMVYhuKRgPB0rcSmA2c9tm/v8WgRbwc0moauLPvljXKer1daY';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -794,8 +794,10 @@ function loadPricesCache() {
 //                      v8 range=5d 以上 → JSON 明文，可正常解析 ✓
 //                      Stooq CSV 透過 corsproxy 可正常取得
 // 結論：只保留 corsproxy.io，並使用 v8 + range=5d；Yahoo 失敗時切換 Stooq
+// 【2026-08 修正】corsproxy.io 更新 API：舊語法 `?<encoded>` 回傳 403，
+//                 必須改用 `?url=<encoded>`；否則所有標的會全數失敗。
 const CORS_WRAPS = [
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
 ];
 
 // ── Layer 2 備援：Stooq.com 符號對照表 ──
