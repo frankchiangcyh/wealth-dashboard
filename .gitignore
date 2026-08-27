@@ -2,3 +2,8 @@
 
 # Claude Code 工具設定（可能含 session token 等敏感資訊）
 .claude/
+
+# 私人退休規劃資料與產出（包含實際資產、年齡、房貸等 PII）
+docs/retirement-interview-*.md
+mc/
+retirement-mc-report*.html

@@ -130,7 +130,7 @@ function testParseStooqCSV() {
   const r1 = parseStooqCSV(normalCSV);
   assertNotNull('parseStooqCSV: 正常 CSV 不為 null', r1);
   assert('parseStooqCSV: 正常 CSV price = 111.05', r1?.price, 111.05);
-  assert('parseStooqCSV: 正常 CSV prevClose = 110.50（用 open 估算）', r1?.prevClose, 110.50);
+  assertNull('parseStooqCSV: 單日 CSV 無真前收', r1?.prevClose);
 
   // ── 3.2 空字串 → null ────────────────────────────────────
   assertNull('parseStooqCSV: 空字串回傳 null', parseStooqCSV(''));
@@ -160,14 +160,14 @@ function testParseStooqCSV() {
   ].join('\n');
   assertNull('parseStooqCSV: Close<0 回傳 null', parseStooqCSV(negCSV));
 
-  // ── 3.7 Open 無效但 Close 有效 → 用 Close 作為 prevClose ─
+  // ── 3.7 Open 無效但 Close 有效 ──────────────────────────
   const noOpenCSV = [
     'Symbol,Date,Time,Open,High,Low,Close,Volume',
     'VT.US,2026-05-07,16:00:00,,111.0,109.0,110.5,1000'
   ].join('\n');
   const r7 = parseStooqCSV(noOpenCSV);
   assertNotNull('parseStooqCSV: Open 空白仍可解析 Close', r7);
-  assert('parseStooqCSV: Open 空白時 prevClose 退回 Close 值', r7?.prevClose, 110.5);
+  assertNull('parseStooqCSV: Open 空白時 prevClose 仍為 null', r7?.prevClose);
 }
 
 // ──────────────────────────────────────────────────────────
@@ -180,7 +180,14 @@ function testParseStooqCSV() {
 //   defaultHandler: () => Response — 未匹配時的預設回應
 function mockFetch(urlHandlers, defaultHandler) {
   return async (url, opts) => {
-    const urlStr = String(url);
+    const proxyUrl = String(url);
+    let urlStr = proxyUrl;
+    try {
+      const parsed = new URL(proxyUrl);
+      if (parsed.hostname === 'corsproxy.io' && parsed.searchParams.has('url')) {
+        urlStr = parsed.searchParams.get('url');
+      }
+    } catch (e) {}
     for (const [key, fn] of Object.entries(urlHandlers)) {
       if (urlStr.includes(key)) return fn(urlStr);
     }
@@ -196,6 +203,17 @@ function yahooOkResponse(symbol, price, prevClose) {
     }}], error: null }
   });
   return new Response(body, { status: 200 });
+}
+
+function yahooSparkOkResponse(priceMap) {
+  const result = Object.entries(priceMap).map(([symbol, price]) => ({
+    symbol,
+    response: [{
+      meta: { symbol, regularMarketPrice: price, chartPreviousClose: price - 1 },
+      indicators: { quote: [{ close: [price - 1, price] }] }
+    }]
+  }));
+  return new Response(JSON.stringify({ spark: { result, error: null } }), { status: 200 });
 }
 
 // 建立模擬失敗的 Response
@@ -228,24 +246,38 @@ async function runIntegrationTests() {
   const origPrices  = { ...prices };
   const origChanges = { ...changes };
   const origReady   = pricesReady;
+  const origPriceCache = localStorage.getItem(LS.PRICES);
 
   function reset() {
     Object.keys(prices).forEach(k => prices[k] = origPrices[k]);
     Object.keys(changes).forEach(k => changes[k] = origChanges[k]);
     pricesReady = origReady;
+    localStorage.removeItem(LS.PRICES);
   }
 
   // ── 場景 1：Yahoo 全部成功（6/6）─────────────────────────
   await (async () => {
     reset();
     let modalShown = false;
+    let yahooRequestCount = 0;
+    let activeYahoo = 0;
+    let maxActiveYahoo = 0;
     const origShow = window.showQuoteErrorModal;
     window.showQuoteErrorModal = () => { modalShown = true; };
 
     window.fetch = mockFetch({
-      'query1.finance.yahoo.com': url => {
-        const sym = decodeURIComponent(url.split('/chart/')[1]?.split('?')[0] ?? '');
+      'query1.finance.yahoo.com': async url => {
+        const isLiveQuote = url.includes('interval=1d') && url.includes('range=5d');
+        if (isLiveQuote) {
+          yahooRequestCount++;
+          activeYahoo++;
+          maxActiveYahoo = Math.max(maxActiveYahoo, activeYahoo);
+          await new Promise(resolve => setTimeout(resolve, 5));
+          activeYahoo--;
+        }
         const priceMap = { VT:110, BND:73, '0050.TW':168, '006208.TW':85, '2409.TW':15, 'TWD=X':32 };
+        if (url.includes('/spark?')) return yahooSparkOkResponse(priceMap);
+        const sym = decodeURIComponent(url.split('/chart/')[1]?.split('?')[0] ?? '');
         return priceMap[sym] ? yahooOkResponse(sym, priceMap[sym], priceMap[sym]-1) : failResponse();
       }
     });
@@ -255,6 +287,8 @@ async function runIntegrationTests() {
     integResults.push({ name: '場景1: Yahoo 全部成功 → pricesReady=true', ok: pricesReady });
     integResults.push({ name: '場景1: Yahoo 全部成功 → modal 不出現', ok: !modalShown });
     integResults.push({ name: '場景1: Yahoo 全部成功 → prices.usdtwd = 32', ok: prices.usdtwd === 32 });
+    integResults.push({ name: '場景1: Yahoo proxy 逐支序列請求', ok: maxActiveYahoo === 1 });
+    integResults.push({ name: '場景1: Yahoo 全部成功僅需 1 個 request', ok: yahooRequestCount === 1 });
 
     window.showQuoteErrorModal = origShow;
   })();
@@ -325,6 +359,7 @@ async function runIntegrationTests() {
   // ── 場景 4：全部來源失敗（確認 modal 顯示所有符號）──────────
   await (async () => {
     reset();
+    pricesReady = true;  // 模擬上一輪報價成功後，本輪定時更新全失敗
     let modalShown = false;
     let failedSet  = null;
     const origShow = window.showQuoteErrorModal;
@@ -340,6 +375,7 @@ async function runIntegrationTests() {
 
     integResults.push({ name: '場景4: 全部失敗 → modal 出現', ok: modalShown });
     integResults.push({ name: '場景4: 全部失敗 → failedSet 有 6 支', ok: (failedSet?.size ?? 0) === 6 });
+    integResults.push({ name: '場景4: 全部失敗且無快取 → pricesReady=false', ok: pricesReady === false });
 
     window.showQuoteErrorModal = origShow;
     window.loadPricesCache = origLoad;
@@ -347,6 +383,8 @@ async function runIntegrationTests() {
 
   // 還原真實 fetch
   window.fetch = _origFetch;
+  if (origPriceCache == null) localStorage.removeItem(LS.PRICES);
+  else localStorage.setItem(LS.PRICES, origPriceCache);
   reset();
 
   return integResults;
@@ -392,6 +430,98 @@ async function testLockScreen() {
   if (origUnlocked) sessionStorage.setItem(LS.UNLOCKED, origUnlocked);
 }
 
+function testCalculateCAGR() {
+  const closes = Array.from({ length: 121 }, (_, index) => 100 * Math.pow(1.1, index / 12));
+  assert('calculateCAGR: 5 年固定 10% 年化', calculateCAGR(closes, 5), 0.1, 1e-10);
+  assert('calculateCAGR: 10 年固定 10% 年化', calculateCAGR(closes, 10), 0.1, 1e-10);
+  assertNull('calculateCAGR: 少於 12 個月回傳 null', calculateCAGR([100, 101], 5));
+  assertNull('calculateCAGR: 全部無效值回傳 null', calculateCAGR([null, NaN, 0, -1], 5));
+}
+
+async function testFetchHistoricalReturns() {
+  const closes = Array.from({ length: 121 }, (_, index) => 100 * Math.pow(1.1, index / 12));
+  let requestCount = 0;
+  window.fetch = mockFetch({
+    'query1.finance.yahoo.com/v7/finance/spark': () => {
+      requestCount++;
+      const result = ['VT', 'BND', '0050.TW', '006208.TW'].map(symbol => ({
+        symbol,
+        response: [{ indicators: { quote: [{ close: closes }] } }]
+      }));
+      return new Response(JSON.stringify({ spark: { result, error: null } }), { status: 200 });
+    }
+  });
+
+  try {
+    const historical = await fetchHistoricalReturns();
+    assert('fetchHistoricalReturns: 僅發 1 個 Spark request', requestCount, 1);
+    assert('fetchHistoricalReturns: VT 5 年為 10%', historical?.VT?.[5], 0.1, 1e-10);
+    assert('fetchHistoricalReturns: VT 10 年為 10%', historical?.VT?.[10], 0.1, 1e-10);
+  } finally {
+    window.fetch = _origFetch;
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+//  Section 6：Google Sheets HTTP 錯誤處理
+// ──────────────────────────────────────────────────────────
+async function testSheetsHttpErrors() {
+  const origToken = sessionStorage.getItem(LS.TOKENS);
+  const origFetch = window.fetch;
+  sessionStorage.setItem(LS.TOKENS, JSON.stringify({
+    access_token: 'test-access-token',
+    expires_at: Date.now() + 3600000
+  }));
+  window.fetch = async () => new Response(
+    JSON.stringify({ error: { code: 403, message: 'Permission denied' } }),
+    { status: 403, headers: { 'Content-Type': 'application/json' } }
+  );
+
+  let rejected = false;
+  try {
+    await sheetsAppend('snapshots!A:L', [[1, 2, 3]]);
+  } catch (e) {
+    rejected = true;
+  } finally {
+    window.fetch = origFetch;
+    if (origToken == null) sessionStorage.removeItem(LS.TOKENS);
+    else sessionStorage.setItem(LS.TOKENS, origToken);
+  }
+
+  assert('Sheets HTTP 403：寫入必須拒絕', rejected, true);
+}
+
+async function testRefreshWithoutSecret() {
+  const origToken = sessionStorage.getItem(LS.TOKENS);
+  const origSecret = sessionStorage.getItem(LS.SECRET);
+  const origRefresh = localStorage.getItem(LS.REFRESH);
+  const origFetch = window.fetch;
+  let fetchCalled = false;
+
+  sessionStorage.removeItem(LS.TOKENS);
+  sessionStorage.removeItem(LS.SECRET);
+  localStorage.setItem(LS.REFRESH, 'test-refresh-token');
+  window.fetch = async () => {
+    fetchCalled = true;
+    return new Response(JSON.stringify({ error: 'invalid_client' }), { status: 400 });
+  };
+
+  try {
+    const token = await getAccessToken();
+    assertNull('OAuth 無密鑰：不回傳 access token', token);
+    assert('OAuth 無密鑰：不得送出 refresh request', fetchCalled, false);
+    assert('OAuth 無密鑰：保留 refresh token', localStorage.getItem(LS.REFRESH), 'test-refresh-token');
+  } finally {
+    window.fetch = origFetch;
+    if (origToken == null) sessionStorage.removeItem(LS.TOKENS);
+    else sessionStorage.setItem(LS.TOKENS, origToken);
+    if (origSecret == null) sessionStorage.removeItem(LS.SECRET);
+    else sessionStorage.setItem(LS.SECRET, origSecret);
+    if (origRefresh == null) localStorage.removeItem(LS.REFRESH);
+    else localStorage.setItem(LS.REFRESH, origRefresh);
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 //  主要入口：window._runChecks()
 // ──────────────────────────────────────────────────────────
@@ -410,6 +540,10 @@ window._runChecks = async function() {
   try { testFracYear();     } catch(e) { results.push({ name:'testFracYear（例外）', ok:false, message:e.message }); }
   try { testParseStooqCSV();} catch(e) { results.push({ name:'testParseStooqCSV（例外）', ok:false, message:e.message }); }
   try { await testLockScreen(); } catch(e) { results.push({ name:'testLockScreen（例外）', ok:false, message:e.message }); }
+  try { testCalculateCAGR(); } catch(e) { results.push({ name:'testCalculateCAGR（例外）', ok:false, message:e.message }); }
+  try { await testFetchHistoricalReturns(); } catch(e) { results.push({ name:'testFetchHistoricalReturns（例外）', ok:false, message:e.message }); }
+  try { await testSheetsHttpErrors(); } catch(e) { results.push({ name:'testSheetsHttpErrors（例外）', ok:false, message:e.message }); }
+  try { await testRefreshWithoutSecret(); } catch(e) { results.push({ name:'testRefreshWithoutSecret（例外）', ok:false, message:e.message }); }
 
   const unitPass = results.filter(r => r.ok).length;
   const unitFail = results.filter(r => !r.ok).length;

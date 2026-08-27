@@ -117,15 +117,15 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 
 ## 7. 多來源報價規格（三層備援）
 
-### Layer 1：Yahoo Finance v8（主要）
+### Layer 1：Yahoo Finance Spark + v8（主要）
 
 | 項目 | 值 |
 |------|----|
-| Endpoint | `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d` |
+| Endpoint | Spark 批次 `/v7/finance/spark?symbols=...&interval=1d&range=5d`；缺漏時補抓 `/v8/finance/chart/{symbol}` |
 | CORS proxy | `corsproxy.io` |
 | 回應格式 | JSON（可能 gzip，`tryFetch` 自動偵測解壓） |
 | 支援標的 | 全部 6 支（VT、BND、0050.TW、006208.TW、2409.TW、TWD=X） |
-| 現價欄位 | `chart.result[0].meta.regularMarketPrice` |
+| 現價欄位 | Spark `result[].response[0].meta.regularMarketPrice` |
 | 前收欄位 | `meta.chartPreviousClose`（計算漲跌幅） |
 | 已棄用 | v7 `/quote` 自 2024 年起需 Crumb Cookie 認證 → 永久 401 |
 
@@ -138,7 +138,7 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 | 回應格式 | CSV 文字（`tryFetchText` 取得，`parseStooqCSV` 解析） |
 | 支援標的 | VT、BND、0050.TW、006208.TW、2409.TW（**不含 TWD=X**） |
 | 現價欄位 | CSV 第 7 欄（Close，0-indexed = col 6） |
-| 前收估算 | CSV 第 4 欄（Open，0-indexed = col 3） |
+| 前收欄位 | 無；單日 CSV 的 Open 不是真正前收，`prevClose` 固定為 `null` |
 
 **Stooq 符號對照**：`VT→vt.us`、`BND→bnd.us`、`0050.TW→0050.tw`、`006208.TW→006208.tw`、`2409.TW→2409.tw`
 
@@ -154,7 +154,7 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 
 ### 流程與錯誤處理
 
-- **瀑布式**：Layer 1 平行全取 → Layer 2 補失敗的非匯率標的 → Layer 3 補 TWD=X
+- **瀑布式**：Layer 1 Spark 單次批次抓取、v8 逐支補漏 → Layer 2 補失敗的非匯率標的 → Layer 3 補 TWD=X
 - **快取保底**：全層失敗的符號從 localStorage 快取補齊
 - **Modal 通知**：任何符號在全 3 層均失敗 → `showQuoteErrorModal(missing)` 彈出，列出失敗標的，不可靜默失敗
 - **不重複疊加**：再次失敗時更新現有 modal 內容，不新增第二個

@@ -29,15 +29,15 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 
 ## 3. 資料來源規格
 
-### Source 1：Yahoo Finance v8（主要）
+### Source 1：Yahoo Finance Spark + v8（主要）
 
 | 項目 | 值 |
 |------|----|
-| URL | `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d` |
+| URL | Spark 批次 `/v7/finance/spark?symbols=...`；缺漏時補抓 `/v8/finance/chart/{symbol}` |
 | CORS proxy | `corsproxy.io` |
 | 回應格式 | JSON（可能 gzip，由 `tryFetch` 自動解壓） |
 | 支援符號 | 全部 6 支（VT、BND、0050.TW、006208.TW、2409.TW、TWD=X） |
-| 現價欄位 | `chart.result[0].meta.regularMarketPrice` |
+| 現價欄位 | Spark `result[].response[0].meta.regularMarketPrice` |
 | 漲跌欄位 | `meta.chartPreviousClose`（計算差值） |
 
 ### Source 2：Stooq.com CSV（第一備援）
@@ -49,7 +49,7 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 | 回應格式 | CSV 文字（第一行為標題，第二行為資料） |
 | 支援符號 | VT、BND、0050.TW、006208.TW、2409.TW（**不含 TWD=X**） |
 | 現價欄位 | CSV 第 7 欄（Close） |
-| 漲跌欄位 | CSV 第 4 欄（Open）計算差值 |
+| 漲跌欄位 | 無；單日 CSV 的 Open 不是真正前收，不顯示漲跌幅 |
 
 **Stooq 符號對照表：**
 
@@ -148,7 +148,7 @@ fetchQuotes()
 
 | 測試函式 | 輸入 | 預期輸出 |
 |---------|------|---------|
-| `parseStooqCSV(csv)` | 合法 CSV 字串 | `{price, open, prevClose}` |
+| `parseStooqCSV(csv)` | 合法 CSV 字串 | `{price, prevClose: null}` |
 | `parseStooqCSV('')` | 空字串 | `null` |
 | `parseStooqCSV('N/D,...')` | Stooq 無資料標記 | `null` |
 | `safeNum('abc', 0, 100)` | 非數字字串 | `0` |

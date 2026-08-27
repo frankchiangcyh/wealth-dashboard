@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-gd5UxNrLN+8XylUtMVYhuKRgPB0rcSmA2c9tm/v8WgRbwc0moauLPvljXKer1daY';
+               script-src 'self' cdn.jsdelivr.net 'sha384-nyKTmN5Wwsuc8WqDnutlJBM9WmugdXUA76FaZXXuDxfbm7DKPj3nLk9XiGRfcxWw';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -990,15 +990,8 @@ function hideQuoteErrorModal() {
   document.getElementById('quote-error-modal')?.classList.remove('show');
 }
 
-// 用 v8 chart API 抓取單一股票現價
-// 使用 1d/5d 取得最即時的日線資料；tryFetch 會自動處理 gzip 解壓
-// 回傳 { price, prevClose } 或 null
-//   prevClose 取 indicators.quote[0].close 倒數第二根 K 線（真正的前一交易日收盤）；
-//   indicators 缺值時退回 meta.chartPreviousClose（在連假/盤前後可能跳針，但聊勝於無）
-async function fetchOneTicker(symbol) {
-  const url    = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
-  const json   = await tryFetch(url);
-  const result = json?.chart?.result?.[0];
+// 從 Yahoo chart / spark 的單一 result 解析現價與前收
+function parseYahooResult(result) {
   const meta   = result?.meta;
   const price  = meta?.regularMarketPrice;
   if (!price) return null;
@@ -1019,10 +1012,30 @@ async function fetchOneTicker(symbol) {
   return { price, prevClose };
 }
 
+// 用 Spark API 一次抓取多支股票，降低 CORS proxy 請求數
+async function fetchYahooBatch(symbols) {
+  const joined = encodeURIComponent(symbols.join(','));
+  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${joined}&interval=1d&range=5d&_=${Date.now()}`;
+  const json = await tryFetch(url);
+  const data = {};
+  (json?.spark?.result ?? []).forEach(item => {
+    const parsed = parseYahooResult(item?.response?.[0]);
+    if (parsed && symbols.includes(item.symbol)) data[item.symbol] = parsed;
+  });
+  return data;
+}
+
+// Spark 缺漏時，用 v8 chart API 逐支補抓
+async function fetchOneTicker(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d&_=${Date.now()}`;
+  const json = await tryFetch(url);
+  return parseYahooResult(json?.chart?.result?.[0]);
+}
+
 // ── 主要報價抓取流程（三層瀑布備援）──
 //
 // 執行順序：
-//   Layer 1  Yahoo Finance v8 chart API（全部 6 支平行）
+//   Layer 1  Yahoo Finance Spark API（單次批次）→ v8 chart（缺漏逐支補抓）
 //   Layer 2  Stooq.com CSV（只補 Layer 1 失敗的非匯率標的，平行）
 //   Layer 3  open.er-api.com（只在 TWD=X 仍失敗時觸發）
 //   最終保底 localStorage 快取（補齊仍缺的符號）
@@ -1031,6 +1044,7 @@ async function fetchOneTicker(symbol) {
 // 【v7 廢棄說明】Yahoo Finance v7 /quote 端點自 2024 年起需要 Crumb 認證，
 //   不帶 crumb 返回 401，CORS proxy 也無法繞過，直接移除。
 async function fetchQuotes() {
+  pricesReady = false;
   setQuoteStatus('loading');
   console.group('[quotes] fetchQuotes 開始（三層備援：Yahoo → Stooq → Open ER）');
 
@@ -1038,11 +1052,23 @@ async function fetchQuotes() {
   const missing = new Set(Object.keys(TICKER_MAP));
   const total   = missing.size;
 
-  // ══ Layer 1：Yahoo Finance v8 chart API（主要來源）══
-  console.group('[quotes] Layer 1: Yahoo Finance v8');
-  const yahooResults = await Promise.all(
-    [...missing].map(async sym => ({ sym, data: await fetchOneTicker(sym) }))
-  );
+  // ══ Layer 1：Yahoo Finance Spark 批次 + v8 chart 補漏 ══
+  console.group('[quotes] Layer 1: Yahoo Finance Spark + v8');
+  const yahooTargets = [...missing];
+  const batchData = await fetchYahooBatch(yahooTargets);
+  yahooTargets.forEach(sym => {
+    const data = batchData[sym];
+    if (data?.price) {
+      applyTickerData(sym, data.price, data.prevClose);
+      missing.delete(sym);
+      console.info(`[quotes] L1 Spark ✓ ${sym} = ${data.price} (prev=${data.prevClose})`);
+    }
+  });
+
+  const yahooResults = [];
+  for (const sym of [...missing]) {
+    yahooResults.push({ sym, data: await fetchOneTicker(sym) });
+  }
   yahooResults.forEach(({ sym, data }) => {
     if (data?.price) {
       applyTickerData(sym, data.price, data.prevClose);
@@ -1105,17 +1131,22 @@ async function fetchQuotes() {
     console.warn(`[quotes] ⚠ ${missing.size} 支仍失敗：${[...missing].join(', ')}`);
     const cached = loadPricesCache();
     if (cached?.prices) {
+      let cacheComplete = true;
       missing.forEach(sym => {
         const info = TICKER_MAP[sym];
-        if (info && cached.prices[info.key] != null) {
+        const cachedPrice = info ? Number(cached.prices[info.key]) : NaN;
+        if (Number.isFinite(cachedPrice) && cachedPrice > 0) {
           prices[info.key]   = cached.prices[info.key];
           if (cached.changes?.[info.key]) changes[info.key] = cached.changes[info.key];
+        } else {
+          cacheComplete = false;
         }
       });
-      pricesReady = true;
-      setQuoteStatus('partial', [...missing].join(', '));
+      pricesReady = cacheComplete;
+      setQuoteStatus(cacheComplete ? 'partial' : 'error', [...missing].join(', '));
     } else {
       // 連快取也沒有
+      pricesReady = false;
       setQuoteStatus('error');
     }
     // Modal 是主要通知管道，不使用 showAlert（避免重複提示）
@@ -1132,49 +1163,34 @@ async function fetchQuotes() {
 // ║  從 Yahoo Finance 抓取各標的真實歷史報酬，供滑桿參考使用   ║
 // ╚══════════════════════════════════════════════════════════╝
 
-// 計算單一標的的 CAGR（複合年化成長率）
-// sym: Yahoo Finance 代號（如 'VT'）；years: 回溯年數（5 或 10）
-// 回傳：小數形式的年化報酬率（如 0.124 = 12.4%），失敗回傳 null
-async function fetchCAGR(sym, years) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1mo&range=${years}y`;
-  try {
-    const json = await tryFetch(url, 12000);
-    const result = json?.chart?.result?.[0];
-    if (!result) return null;
-
-    // 取出月收盤價，過濾掉 null 和異常值
-    const closes = result.indicators?.quote?.[0]?.close ?? [];
-    const valid  = closes.filter(p => p != null && isFinite(p) && p > 0);
-    if (valid.length < 12) return null;  // 至少需要 1 年資料
-
-    // CAGR = (終值 / 始值)^(1 / 實際年數) - 1
-    const actualYears = valid.length / 12;
-    const cagr = Math.pow(valid[valid.length - 1] / valid[0], 1 / actualYears) - 1;
-
-    // 合理性驗證：報酬率不應超過 ±200%，否則視為資料異常
-    return (isFinite(cagr) && Math.abs(cagr) < 2) ? cagr : null;
-  } catch(e) {
-    return null;
-  }
+// 從月收盤序列計算指定年數的 CAGR（小數形式，如 0.124 = 12.4%）
+function calculateCAGR(closes, years) {
+  const valid = closes.filter(p => p != null && isFinite(p) && p > 0);
+  const selected = valid.slice(-(years * 12 + 1));
+  if (selected.length < 12) return null;
+  const actualYears = (selected.length - 1) / 12;
+  const cagr = Math.pow(selected[selected.length - 1] / selected[0], 1 / actualYears) - 1;
+  return (isFinite(cagr) && Math.abs(cagr) < 2) ? cagr : null;
 }
 
-// 同時抓取所有持倉標的的 5 年與 10 年 CAGR（全部平行請求，加快速度）
+// 用一個 Spark request 取得全部標的 10 年月線，再分別計算 5 年與 10 年 CAGR
 async function fetchHistoricalReturns() {
   const symbols = ['VT', 'BND', '0050.TW', '006208.TW'];
   const results = {};
+  const joined = encodeURIComponent(symbols.join(','));
+  const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${joined}&interval=1mo&range=10y&_=${Date.now()}`;
+  const json = await tryFetch(url, 12000);
 
-  // 8 個請求同時發出（4 標的 × 2 年期）
-  await Promise.all(
-    symbols.flatMap(sym =>
-      [5, 10].map(async years => {
-        const cagr = await fetchCAGR(sym, years);
-        if (cagr !== null) {
-          if (!results[sym]) results[sym] = {};
-          results[sym][years] = cagr;
-        }
-      })
-    )
-  );
+  (json?.spark?.result ?? []).forEach(item => {
+    const closes = item?.response?.[0]?.indicators?.quote?.[0]?.close ?? [];
+    [5, 10].forEach(years => {
+      const cagr = calculateCAGR(closes, years);
+      if (cagr !== null) {
+        if (!results[item.symbol]) results[item.symbol] = {};
+        results[item.symbol][years] = cagr;
+      }
+    });
+  });
 
   return Object.keys(results).length ? results : null;
 }
@@ -2030,12 +2046,18 @@ function closeSecretModal() {
 // 確認輸入的密鑰：存入 sessionStorage 後自動繼續 OAuth 流程
 // sessionStorage 的生命週期與分頁綁定，關閉分頁即自動消失，
 // 比 localStorage 大幅縮短 CLIENT_SECRET 在瀏覽器中的暴露時間。
-function confirmSecret() {
+async function confirmSecret() {
   const s = document.getElementById('secret-input').value.trim();
   if (!s) { document.getElementById('secret-input').focus(); return; }
   sessionStorage.setItem(LS.SECRET, s);
   closeSecretModal();
-  startOAuth();  // 繼續走 OAuth 流程
+  const tokens = loadTokens();
+  if (tokens?.refresh_token) {
+    updateGoogleStatus();
+    await syncFromSheets();
+  } else {
+    startOAuth();
+  }
 }
 
 // ── OAuth 授權啟動 ───────────────────────────────────────────
@@ -2166,6 +2188,11 @@ async function getAccessToken() {
 
   // Token 即將到期（< 1 分鐘）或已過期，嘗試用 refresh_token 換新的
   if (!t.refresh_token) { clearTokens(); updateGoogleStatus(); return null; }
+  if (!getSecret()) {
+    document.getElementById('secret-modal').classList.add('show');
+    setTimeout(() => document.getElementById('secret-input').focus(), 50);
+    return null;
+  }
   try {
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method:  'POST',
@@ -2226,6 +2253,19 @@ function updateGoogleStatus() {
 // ║                Google Sheets API                         ║
 // ╚══════════════════════════════════════════════════════════╝
 
+async function parseSheetsResponse(res) {
+  const data = await res.json().catch(() => null);
+  if (res.status === 401) {
+    clearTokens();
+    updateGoogleStatus();
+    throw new Error('Token 已失效，請重新連結 Google');
+  }
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `Google Sheets API HTTP ${res.status}`);
+  }
+  return data;
+}
+
 // 讀取指定範圍的 Sheets 資料（GET）
 async function sheetsGet(range) {
   const token = await getAccessToken();
@@ -2233,9 +2273,7 @@ async function sheetsGet(range) {
   const res = await fetch(`${getSheetsApi()}/values/${encodeURIComponent(range)}`, {
     headers: { Authorization: 'Bearer ' + token }
   });
-  // 401 代表 token 失效，清除後請使用者重新登入
-  if (res.status === 401) { clearTokens(); updateGoogleStatus(); throw new Error('Token 已失效，請重新連結 Google'); }
-  return res.json();
+  return parseSheetsResponse(res);
 }
 
 // 在指定範圍後面新增一行資料（append）
@@ -2250,8 +2288,7 @@ async function sheetsAppend(range, values) {
       body:    JSON.stringify({ values })
     }
   );
-  if (res.status === 401) { clearTokens(); updateGoogleStatus(); throw new Error('Token 已失效，請重新連結 Google'); }
-  return res.json();
+  return parseSheetsResponse(res);
 }
 
 // 確保試算表第一行有欄位標題（首次使用時自動建立）
@@ -2762,19 +2799,27 @@ function stopIdleWatch() {
     btn.textContent = '⏳ 授權中…';
     await handleOAuthCallback(oauthCode);
   } else if (isAuthenticated()) {
-    syncFromSheets();
+    const tokens = loadTokens();
+    if (!tokens?.access_token && tokens?.refresh_token && !getSecret()) {
+      document.getElementById('secret-modal').classList.add('show');
+      setTimeout(() => document.getElementById('secret-input').focus(), 50);
+    } else {
+      syncFromSheets();
+    }
   }
 
-  // Fetch live quotes（每 5 分鐘自動更新）
-  fetchQuotes();
+  // 先完成即時報價，再啟動非必要的歷史請求，避免 proxy 瞬間過載
+  await fetchQuotes();
   setInterval(fetchQuotes, QUOTE_REFRESH_MS);
 
-  // 抓取歷史年化報酬參考資料（背景非同步，不阻塞頁面）
-  fetchHistoricalReturns().then(data => {
-    if (!data) return;
-    returnRefData = data;
-    renderReturnRef(data);
-  });
+  // 歷史資料非必要，延後抓取以避開即時報價的 proxy 節流窗口
+  setTimeout(() => {
+    fetchHistoricalReturns().then(data => {
+      if (!data) return;
+      returnRefData = data;
+      renderReturnRef(data);
+    });
+  }, 60000);
 })();
 </script>
 </body>
