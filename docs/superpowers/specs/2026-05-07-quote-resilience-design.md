@@ -1,6 +1,6 @@
 # 報價韌性設計規格書
 
-> 版本：1.0｜日期：2026-05-07｜狀態：已核准
+> 版本：1.1｜日期：2026-08-27｜狀態：已核准
 
 ---
 
@@ -15,6 +15,8 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 
 目前已修正 gzip 解壓問題（使用 `DecompressionStream`）。本規格進一步增加多層備援來源，並在任何標的失敗時以視覺 Modal 明確通知使用者。
 
+2026-08-27 實測發現 `corsproxy.io` 會在短時間多次請求後回傳 HTTP 429/403。此時主要 Spark 可能只回部分標的，而 Yahoo v8 與 Stooq 補漏請求又共用同一個 proxy，形成單點故障。Yahoo 上游直接查詢仍能取得 VT 與 2409.TW，問題位於 proxy 路徑而非股票代號或 Yahoo 資料。
+
 ---
 
 ## 2. 設計目標
@@ -24,6 +26,8 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 3. **任一失敗即通知**：任何符號在全部 3 層後仍取不到，立即彈出 Modal
 4. **不可靜默失敗**：報價錯誤必須明確知道，Modal 需手動關閉
 5. **快取保底**：全部來源失敗時，使用 localStorage 上次快取值維持可用性
+6. **避免 proxy 單點故障**：Yahoo 與 Stooq 請求依序嘗試 `corsproxy.io`、AllOrigins
+7. **控制請求數**：Spark 缺漏先以缺漏符號再做一次批次查詢，仍缺漏才逐支呼叫 v8
 
 ---
 
@@ -34,7 +38,7 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 | 項目 | 值 |
 |------|----|
 | URL | Spark 批次 `/v7/finance/spark?symbols=...`；缺漏時補抓 `/v8/finance/chart/{symbol}` |
-| CORS proxy | `corsproxy.io` |
+| CORS proxy | `corsproxy.io` 第一順位；AllOrigins 第二順位 |
 | 回應格式 | JSON（可能 gzip，由 `tryFetch` 自動解壓） |
 | 支援符號 | 全部 6 支（VT、BND、0050.TW、006208.TW、2409.TW、TWD=X） |
 | 現價欄位 | Spark `result[].response[0].meta.regularMarketPrice` |
@@ -45,7 +49,7 @@ Yahoo Finance 公開 API 在 2024 年底起出現兩個根本性問題：
 | 項目 | 值 |
 |------|----|
 | URL | `https://stooq.com/q/l/?s={stooqSymbol}&f=sd2t2ohlcv&h&e=csv` |
-| CORS proxy | `corsproxy.io` |
+| CORS proxy | `corsproxy.io` 第一順位；AllOrigins 第二順位 |
 | 回應格式 | CSV 文字（第一行為標題，第二行為資料） |
 | 支援符號 | VT、BND、0050.TW、006208.TW、2409.TW（**不含 TWD=X**） |
 | 現價欄位 | CSV 第 7 欄（Close） |
@@ -81,10 +85,14 @@ fetchQuotes()
   │
   ├─ 初始化 missing = 全部 6 支符號的 Set
   │
-  ├─ Layer 1：Yahoo Finance v8（平行抓取全部 missing）
-  │   fetchYahooTicker(sym) × N 個，Promise.all
+  ├─ Layer 1A：Yahoo Finance Spark（全部 6 支，單次批次）
   │   → 成功的從 missing 移除，更新 prices / changes
-  │   → 失敗的留在 missing
+  │
+  ├─ Layer 1B：Yahoo Finance Spark（只重試 missing，最多一次）
+  │   → 成功的從 missing 移除
+  │
+  ├─ Layer 1C：Yahoo Finance v8（只逐支補仍 missing 的符號）
+  │   → 成功的從 missing 移除
   │
   ├─ Layer 2：Stooq CSV（只處理 missing ∩ Stooq支援的符號，平行）
   │   fetchStooqTicker(sym) × M 個，Promise.all
@@ -101,6 +109,13 @@ fetchQuotes()
       │                        setQuoteStatus('partial', missing)
       └─ prices 全為預設值  → 讀 localStorage 快取（最後保底）
 ```
+
+所有經 proxy 的請求由同一個 wrapper 依序嘗試：
+
+1. `https://corsproxy.io/?url=<encoded-url>`
+2. `https://api.allorigins.win/raw?url=<encoded-url>`
+
+任一 proxy 回傳非 2xx、逾時、無法解析或缺少有效資料時，才進入下一個 proxy。AllOrigins 為間歇性備援，不取代 `corsproxy.io`；兩者皆失敗時維持既有瀑布與 Modal 行為。
 
 ---
 
@@ -165,6 +180,8 @@ fetchQuotes()
 | Yahoo 全失敗 + Stooq 成功 | ❌ | ✅ 5/5 | ✅ 1 | status='ok', modal 不出現 |
 | TWD=X 全失敗 | ✅ 5/5 | ✅ 0（不含匯率） | ❌ | modal 出現（TWD=X 失敗） |
 | 全部失敗 | ❌ | ❌ | ❌ | modal 出現（全部失敗），讀快取 |
+| 截圖回歸：首輪 Spark 缺 VT/2409.TW，第一 proxy 節流 | 第二 proxy 的缺漏 Spark 補回 2/2 | — | — | 6 支完整、modal 不出現、逐支 v8 request 為 0 |
+| 兩個 proxy 都失敗 | ❌ | ❌ | 視 TWD=X 狀態 | modal 照實列出仍缺符號，不得移除錯誤通知 |
 
 ### 手動驗證入口
 `index.html` 載入後，在 Console 執行 `window._runChecks()` 輸出測試結果。
@@ -180,13 +197,14 @@ connect-src https://query1.finance.yahoo.com
             https://query2.finance.yahoo.com
             https://stooq.com
             https://corsproxy.io
+            https://api.allorigins.win
             https://open.er-api.com
             https://oauth2.googleapis.com
             https://sheets.googleapis.com
             https://accounts.google.com;
 ```
 
-注意：移除 `https://api.allorigins.win`（已確認逾時，無用）。
+AllOrigins 僅作第二順位備援。實測單支 Yahoo v8 可成功，但批次請求可能間歇性缺少 CORS header，因此不得作為唯一 proxy。
 
 ---
 
