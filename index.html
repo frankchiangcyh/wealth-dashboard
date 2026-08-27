@@ -9,12 +9,13 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-nyKTmN5Wwsuc8WqDnutlJBM9WmugdXUA76FaZXXuDxfbm7DKPj3nLk9XiGRfcxWw';
+               script-src 'self' cdn.jsdelivr.net 'sha384-ipz9yffc0GpRfbFyVnERhvKksr6LsYUDRZkVddewUmrdEHMy4sFZ4m2fycKqNRZ3';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
                            https://stooq.com
                            https://corsproxy.io
+                           https://api.allorigins.win
                            https://open.er-api.com
                            https://oauth2.googleapis.com
                            https://sheets.googleapis.com
@@ -788,16 +789,16 @@ function loadPricesCache() {
 
 // CORS Proxy 清單
 // 【診斷結論（2025-05）】
-//   ・allorigins.win → 對 Yahoo Finance 全部逾時（AbortError），已移除
 //   ・corsproxy.io   → v7 API 回傳 401（Yahoo 現在需要 Crumb 認證）
 //                      v8 range=1d 回傳 gzip binary → JSON parse 失敗
 //                      v8 range=5d 以上 → JSON 明文，可正常解析 ✓
 //                      Stooq CSV 透過 corsproxy 可正常取得
-// 結論：只保留 corsproxy.io，並使用 v8 + range=5d；Yahoo 失敗時切換 Stooq
 // 【2026-08 修正】corsproxy.io 更新 API：舊語法 `?<encoded>` 回傳 403，
 //                 必須改用 `?url=<encoded>`；否則所有標的會全數失敗。
+// 【2026-08 韌性】corsproxy.io 可能回 429/403，AllOrigins 作第二順位獨立備援。
 const CORS_WRAPS = [
   u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
 ];
 
 // ── Layer 2 備援：Stooq.com 符號對照表 ──
@@ -1064,6 +1065,20 @@ async function fetchQuotes() {
       console.info(`[quotes] L1 Spark ✓ ${sym} = ${data.price} (prev=${data.prevClose})`);
     }
   });
+
+  // 首輪 Spark 缺漏時，以缺漏清單再批次嘗試一次，避免立即展開逐支請求
+  if (missing.size > 0) {
+    const retryTargets = [...missing];
+    const retryData = await fetchYahooBatch(retryTargets);
+    retryTargets.forEach(sym => {
+      const data = retryData[sym];
+      if (data?.price) {
+        applyTickerData(sym, data.price, data.prevClose);
+        missing.delete(sym);
+        console.info(`[quotes] L1 Spark 重試 ✓ ${sym} = ${data.price} (prev=${data.prevClose})`);
+      }
+    });
+  }
 
   const yahooResults = [];
   for (const sym of [...missing]) {
