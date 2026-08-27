@@ -122,7 +122,7 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 | 項目 | 值 |
 |------|----|
 | Endpoint | Spark 批次 `/v7/finance/spark?symbols=...&interval=1d&range=5d`；缺漏時補抓 `/v8/finance/chart/{symbol}` |
-| CORS proxy | `corsproxy.io` |
+| CORS proxy | `corsproxy.io` → `api.allorigins.win` |
 | 回應格式 | JSON（可能 gzip，`tryFetch` 自動偵測解壓） |
 | 支援標的 | 全部 6 支（VT、BND、0050.TW、006208.TW、2409.TW、TWD=X） |
 | 現價欄位 | Spark `result[].response[0].meta.regularMarketPrice` |
@@ -134,7 +134,7 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 | 項目 | 值 |
 |------|----|
 | Endpoint | `https://stooq.com/q/l/?s={stooqSymbol}&f=sd2t2ohlcv&h&e=csv` |
-| CORS proxy | `corsproxy.io` |
+| CORS proxy | `corsproxy.io` → `api.allorigins.win` |
 | 回應格式 | CSV 文字（`tryFetchText` 取得，`parseStooqCSV` 解析） |
 | 支援標的 | VT、BND、0050.TW、006208.TW、2409.TW（**不含 TWD=X**） |
 | 現價欄位 | CSV 第 7 欄（Close，0-indexed = col 6） |
@@ -154,7 +154,8 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 
 ### 流程與錯誤處理
 
-- **瀑布式**：Layer 1 Spark 單次批次抓取、v8 逐支補漏 → Layer 2 補失敗的非匯率標的 → Layer 3 補 TWD=X
+- **瀑布式**：Layer 1 全量 Spark、缺漏 Spark 重試一次、v8 逐支補漏 → Layer 2 補失敗的非匯率標的 → Layer 3 補 TWD=X
+- **proxy 備援**：Yahoo / Stooq 依序嘗試 `corsproxy.io`、`api.allorigins.win`，避免單一 proxy 節流造成全層失效
 - **快取保底**：全層失敗的符號從 localStorage 快取補齊
 - **Modal 通知**：任何符號在全 3 層均失敗 → `showQuoteErrorModal(missing)` 彈出，列出失敗標的，不可靜默失敗
 - **不重複疊加**：再次失敗時更新現有 modal 內容，不新增第二個
@@ -352,7 +353,7 @@ Step 3  建立 GitHub Private Repo
 | [x] | 三層瀑布 `fetchQuotes` | missing Set 追蹤、平行請求、逐層補齊 |
 | [x] | 報價錯誤 Modal | 列出失敗標的、快取時間提示、重試按鈕、不可靜默失敗 |
 | [x] | `setQuoteStatus('partial')` | 部分失敗狀態燈號，不重複觸發 alert banner |
-| [x] | CSP 更新 | 加入 `stooq.com`、`open.er-api.com`，移除 `api.allorigins.win` |
+| [x] | CSP 更新 | 加入 `stooq.com`、`open.er-api.com`、`api.allorigins.win` |
 | [x] | `_check.js` 測試 | 單元測試（parseStooqCSV、safeNum、fracYear）+ 整合測試（mock fetch） |
 
 **驗收標準**：Console 執行 `window._runChecks()` 全部通過；Yahoo 失敗時自動切 Stooq；TWD=X 失敗時自動切 Open ER；任何符號全層失敗時彈出 Modal。

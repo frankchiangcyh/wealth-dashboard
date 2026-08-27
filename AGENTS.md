@@ -85,15 +85,16 @@ python update-csp-hash.py
 
 | Layer | 來源 | 走 CORS Proxy | 支援標的 | 失敗時 |
 |-------|------|--------------|---------|--------|
-| 1 | Yahoo Finance Spark 批次 + v8 chart 補漏 | 是（`corsproxy.io`） | 全部 6 支 | 進 Layer 2 |
-| 2 | Stooq.com CSV | 是（`corsproxy.io`） | 5 支股票（不含 `TWD=X`） | 進 Layer 3（僅 TWD=X） |
+| 1 | Yahoo Finance Spark 批次 + v8 chart 補漏 | 是（雙 proxy） | 全部 6 支 | 進 Layer 2 |
+| 2 | Stooq.com CSV | 是（雙 proxy） | 5 支股票（不含 `TWD=X`） | 進 Layer 3（僅 TWD=X） |
 | 3 | `open.er-api.com` | 否，原生 CORS | 僅 `TWD=X` | localStorage 快取補齊 |
 
 **已知眉角**：
 
 - **corsproxy.io 語法**：必用 `https://corsproxy.io/?url=<encoded>`。舊寫法 `?<encoded>` 於 2026-08 起回傳 HTTP 403（Commit `b306cd8` 的修正即此案）。
+- **proxy 順序**：所有 Yahoo / Stooq 請求依序嘗試 `corsproxy.io` → `api.allorigins.win`；兩者都失敗才進下一資料來源。
 - **gzip 自動解壓**：Yahoo 經 proxy 有時回傳 gzip binary，`tryFetch` / `tryFetchText` 用瀏覽器原生 `DecompressionStream` 偵測 magic number `0x1f 0x8b` 並解壓，勿改壞這段。
-- **Yahoo 查詢策略**：主要報價用 Spark 一次抓 6 支，缺漏才用 v8 chart 並固定 `range=5d`；v7 `/quote` 已需 Crumb 認證，永久 401，**不得復活**。
+- **Yahoo 查詢策略**：全量 Spark → 缺漏 Spark 重試一次 → v8 chart 逐支補漏並固定 `range=5d`；v7 `/quote` 已需 Crumb 認證，永久 401，**不得復活**。
 - **Stooq 前收**：Stooq 單日 CSV 沒有真前收，`parseStooqCSV` 刻意回傳 `prevClose: null`；不要「順手補上」用 open 當前收，那是舊 v1 快取 bug 的成因。
 - **快取版本鑰**：`LS.PRICES = 'wd_prices_v2'`。若快取 schema 再改，**必須改 v3**，否則舊裝置讀到爛資料。
 - **失敗必彈 modal**：任何符號在 3 層都失敗 → `showQuoteErrorModal(missing)`，不可靜默降級為 0。
