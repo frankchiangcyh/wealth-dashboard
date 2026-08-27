@@ -182,16 +182,18 @@ function mockFetch(urlHandlers, defaultHandler) {
   return async (url, opts) => {
     const proxyUrl = String(url);
     let urlStr = proxyUrl;
+    let proxyHost = '';
     try {
       const parsed = new URL(proxyUrl);
-      if (parsed.hostname === 'corsproxy.io' && parsed.searchParams.has('url')) {
+      proxyHost = parsed.hostname;
+      if ((proxyHost === 'corsproxy.io' || proxyHost === 'api.allorigins.win') && parsed.searchParams.has('url')) {
         urlStr = parsed.searchParams.get('url');
       }
     } catch (e) {}
     for (const [key, fn] of Object.entries(urlHandlers)) {
-      if (urlStr.includes(key)) return fn(urlStr);
+      if (urlStr.includes(key)) return fn(urlStr, proxyHost);
     }
-    return defaultHandler ? defaultHandler(urlStr) : new Response('', { status: 503 });
+    return defaultHandler ? defaultHandler(urlStr, proxyHost) : new Response('', { status: 503 });
   };
 }
 
@@ -289,6 +291,47 @@ async function runIntegrationTests() {
     integResults.push({ name: '場景1: Yahoo 全部成功 → prices.usdtwd = 32', ok: prices.usdtwd === 32 });
     integResults.push({ name: '場景1: Yahoo proxy 逐支序列請求', ok: maxActiveYahoo === 1 });
     integResults.push({ name: '場景1: Yahoo 全部成功僅需 1 個 request', ok: yahooRequestCount === 1 });
+
+    window.showQuoteErrorModal = origShow;
+  })();
+
+  // ── 截圖回歸：首輪 Spark 缺 VT/2409.TW，corsproxy 節流，AllOrigins 補回 ──
+  await (async () => {
+    reset();
+    let modalShown = false;
+    let failedSet = null;
+    let sparkRequestCount = 0;
+    let v8RequestCount = 0;
+    const origShow = window.showQuoteErrorModal;
+    window.showQuoteErrorModal = symbols => { modalShown = true; failedSet = symbols; };
+
+    window.fetch = mockFetch({
+      'query1.finance.yahoo.com/v7/finance/spark': (url, proxyHost) => {
+        sparkRequestCount++;
+        if (sparkRequestCount === 1) {
+          return yahooSparkOkResponse({ BND:73, '0050.TW':168, '006208.TW':85, 'TWD=X':32 });
+        }
+        if (proxyHost === 'corsproxy.io') return failResponse(429);
+        if (proxyHost === 'api.allorigins.win') {
+          return yahooSparkOkResponse({ VT:110, '2409.TW':15 });
+        }
+        return failResponse();
+      },
+      'query1.finance.yahoo.com/v8/finance/chart': () => {
+        v8RequestCount++;
+        return failResponse(429);
+      },
+      'stooq.com': () => failResponse(404)
+    });
+
+    await fetchQuotes();
+
+    integResults.push({ name: '截圖回歸: 6 支最終完整', ok: pricesReady === true });
+    integResults.push({ name: '截圖回歸: VT 已由缺漏 Spark 補回', ok: prices.vt === 110 });
+    integResults.push({ name: '截圖回歸: 2409.TW 已由缺漏 Spark 補回', ok: prices.auo === 15 });
+    integResults.push({ name: '截圖回歸: modal 不出現', ok: !modalShown });
+    integResults.push({ name: '截圖回歸: VT/2409.TW 不殘留於錯誤清單', ok: !failedSet?.has('VT') && !failedSet?.has('2409.TW') });
+    integResults.push({ name: '截圖回歸: 不發逐支 v8 request', ok: v8RequestCount === 0 });
 
     window.showQuoteErrorModal = origShow;
   })();
