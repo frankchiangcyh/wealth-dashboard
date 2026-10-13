@@ -88,6 +88,13 @@ function testSafeNum() {
   assert('safeNum: 零值', safeNum(0, 0, 100), 0);
 }
 
+function testClientIdValidation() {
+  assert('OAuth Client ID：有效格式', isValidClientId('123456789-example.apps.googleusercontent.com'), true);
+  assert('OAuth Client ID：拒絕用戶端密鑰', isValidClientId('GOCSPX-example'), false);
+  assert('OAuth Client ID：拒絕空字串', isValidClientId(''), false);
+  assert('OAuth Client ID：拒絕附加網址', isValidClientId('123-example.apps.googleusercontent.com/path'), false);
+}
+
 // ──────────────────────────────────────────────────────────
 //  Section 2：fracYear 單元測試
 //  fracYear 已提升至全域，可直接呼叫
@@ -580,6 +587,7 @@ window._runChecks = async function() {
   results.length = 0;
   console.group('── 單元測試');
   try { testSafeNum();      } catch(e) { results.push({ name:'testSafeNum（例外）', ok:false, message:e.message }); }
+  try { testClientIdValidation(); } catch(e) { results.push({ name:'testClientIdValidation（例外）', ok:false, message:e.message }); }
   try { testFracYear();     } catch(e) { results.push({ name:'testFracYear（例外）', ok:false, message:e.message }); }
   try { testParseStooqCSV();} catch(e) { results.push({ name:'testParseStooqCSV（例外）', ok:false, message:e.message }); }
   try { await testLockScreen(); } catch(e) { results.push({ name:'testLockScreen（例外）', ok:false, message:e.message }); }

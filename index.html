@@ -9,7 +9,7 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-ipz9yffc0GpRfbFyVnERhvKksr6LsYUDRZkVddewUmrdEHMy4sFZ4m2fycKqNRZ3';
+               script-src 'self' cdn.jsdelivr.net 'sha384-QGIQjBxcIzNi+haQ94yIWr1Ss2RJZGu7t8aGp6qf+Rj0uG6wWJFwIYu4wRS3mpkc';
                style-src 'self' 'unsafe-inline';
                connect-src https://query1.finance.yahoo.com
                            https://query2.finance.yahoo.com
@@ -637,6 +637,11 @@ const REDIRECT_URI = window.location.hostname.includes('github.io')
 
 // 讀取 Google OAuth Client ID（格式：xxxxxxx.apps.googleusercontent.com）
 function getClientId()  { return localStorage.getItem(LS.CLIENT_ID) || ''; }
+
+// 防止將 GOCSPX-... 用戶端密鑰誤填為 OAuth Client ID。
+function isValidClientId(value) {
+  return /^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(value);
+}
 
 // 讀取 Google Sheets 試算表 ID（網址列 /d/ 後面的長串）
 function getSheetId()   { return localStorage.getItem(LS.SHEET_ID)  || ''; }
@@ -1945,13 +1950,17 @@ function scrollChartToLatestSnapshot() {
 
 // 顯示 Google 設定彈窗，並預填 localStorage 中已有的值（方便修改）
 function showConfigModal() {
-  document.getElementById('config-client-id').value = getClientId();
+  const savedId = getClientId();
+  if (savedId && !isValidClientId(savedId)) localStorage.removeItem(LS.CLIENT_ID);
+  const clientInput = document.getElementById('config-client-id');
+  clientInput.value = isValidClientId(savedId) ? savedId : '';
+  clientInput.setCustomValidity('');
   document.getElementById('config-sheet-id').value  = getSheetId();
   document.getElementById('config-modal').classList.add('show');
   // 自動 focus 到第一個空白欄位
   setTimeout(() => {
-    const el = getClientId() ? document.getElementById('config-sheet-id')
-                             : document.getElementById('config-client-id');
+    const el = isValidClientId(getClientId()) ? document.getElementById('config-sheet-id')
+                                               : clientInput;
     el.focus();
   }, 50);
 }
@@ -1963,9 +1972,16 @@ function hideConfigModal() {
 
 // 儲存設定：驗證非空後存入 localStorage，繼續 OAuth 流程
 function confirmConfig() {
-  const cid = document.getElementById('config-client-id').value.trim();
+  const clientInput = document.getElementById('config-client-id');
+  const cid = clientInput.value.trim();
   const sid = document.getElementById('config-sheet-id').value.trim();
-  if (!cid) { document.getElementById('config-client-id').focus(); return; }
+  if (!isValidClientId(cid)) {
+    clientInput.setCustomValidity('請輸入以 .apps.googleusercontent.com 結尾的 OAuth 用戶端 ID；GOCSPX- 開頭的是用戶端密鑰。');
+    clientInput.reportValidity();
+    clientInput.focus();
+    return;
+  }
+  clientInput.setCustomValidity('');
   if (!sid) { document.getElementById('config-sheet-id').focus();  return; }
   localStorage.setItem(LS.CLIENT_ID, cid);
   localStorage.setItem(LS.SHEET_ID,  sid);
@@ -1982,7 +1998,7 @@ function getSecret() { return sessionStorage.getItem(LS.SECRET) || ''; }
 // 檢查必要設定是否已填入（CLIENT_ID / SHEET_ID 均需有效長度）
 // 使用者首次連結 Google 時，由設定 Modal 引導輸入並存入 localStorage
 function isConfigured() {
-  return getClientId().length > 10 && getSheetId().length > 10;
+  return isValidClientId(getClientId()) && getSheetId().length > 10;
 }
 
 // 將 Google 回傳的 token 分開存放
@@ -2761,6 +2777,7 @@ function stopIdleWatch() {
   // 設定 Modal 按鈕（CLIENT_ID / SHEET_ID）
   document.getElementById('config-cancel')       .addEventListener('click', hideConfigModal);
   document.getElementById('config-confirm')      .addEventListener('click', confirmConfig);
+  document.getElementById('config-client-id')    .addEventListener('input', e => e.target.setCustomValidity(''));
   document.getElementById('secret-cancel')       .addEventListener('click', closeSecretModal);
   document.getElementById('secret-confirm')      .addEventListener('click', confirmSecret);
   // 報價錯誤 Modal 按鈕
