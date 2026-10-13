@@ -9,12 +9,9 @@
 <!-- 計算方式：執行專案目錄下的 update-csp-hash.py 即可自動更新 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' cdn.jsdelivr.net 'sha384-QGIQjBxcIzNi+haQ94yIWr1Ss2RJZGu7t8aGp6qf+Rj0uG6wWJFwIYu4wRS3mpkc';
+               script-src 'self' cdn.jsdelivr.net 'sha384-u8eu04ZUiY7WCdUjsOuzsdEwhGd7VzpWZgz+deCwUvjFARjmABxRGNr7QFf5trWM';
                style-src 'self' 'unsafe-inline';
-               connect-src https://query1.finance.yahoo.com
-                           https://query2.finance.yahoo.com
-                           https://stooq.com
-                           https://corsproxy.io
+               connect-src https://proxy.cors.dev
                            https://api.allorigins.win
                            https://open.er-api.com
                            https://oauth2.googleapis.com
@@ -198,6 +195,9 @@ body {
 }
 .modal-input:focus { border-color:#58a6ff; }
 .modal-btns { display:flex; gap:10px; justify-content:flex-end; }
+#sheets-error-modal { z-index:1001; }
+#sheets-error-modal .modal-box { max-height:90vh; overflow-y:auto; }
+#sheets-error-modal .modal-btns { flex-wrap:wrap; }
 .modal-btn-ok {
   padding:9px 22px; background:#1f6feb; color:#fff; border:none;
   border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;
@@ -374,9 +374,27 @@ body.locked > *:not(#lock-screen) { visibility:hidden; }
     <label class="modal-label">Sheets 試算表 ID（SHEET_ID）</label>
     <input class="modal-input" id="config-sheet-id" type="text"
            placeholder="網址列 /d/ 後面的長串，例：1AbCdEf..." autocomplete="off">
+    <label class="modal-label">OAuth 用戶端密鑰（選填）</label>
+    <input class="modal-input" id="config-secret-input" type="password"
+           placeholder="留白保留目前分頁的密鑰" autocomplete="off">
+    <p>密鑰只存於此分頁的 sessionStorage；留白不會清除原有密鑰。</p>
     <div class="modal-btns">
       <button class="modal-btn-cancel" id="config-cancel">取消</button>
       <button class="modal-btn-ok"     id="config-confirm">儲存並繼續</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sheets 連線失敗：保留本機資料，允許重試或重新輸入設定 -->
+<div class="modal-overlay" id="sheets-error-modal" role="alertdialog" aria-modal="true" aria-labelledby="sheets-error-title">
+  <div class="modal-box" style="border-color:#d29922;max-width:520px;">
+    <h3 id="sheets-error-title">⚠ Google Sheets 讀取失敗</h3>
+    <p id="sheets-error-detail"></p>
+    <p>本機快照與授權資料均未清除。若顯示「Failed to fetch」，請先檢查網路並重新讀取；這不一定是設定錯誤。</p>
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" id="sheets-error-close">關閉</button>
+      <button class="modal-btn-cancel" id="sheets-error-config">重新輸入連線資訊</button>
+      <button class="modal-btn-ok" id="sheets-error-retry">重新讀取</button>
     </div>
   </div>
 </div>
@@ -389,7 +407,7 @@ body.locked > *:not(#lock-screen) { visibility:hidden; }
       <h3 style="margin:0;">⚠ 部分報價無法取得</h3>
       <button class="modal-btn-cancel" id="quote-error-close-x" style="padding:2px 8px;font-size:16px;line-height:1;">✕</button>
     </div>
-    <p>以下標的在所有來源（Yahoo Finance、Stooq、Open ER）均取得失敗：</p>
+    <p>以下標的在所有適用來源（Yahoo Finance、臺灣證券交易所、Open ER）均取得失敗：</p>
     <ul id="quote-error-list" style="color:#f85149;margin:0 0 10px 0;padding-left:20px;line-height:1.8;"></ul>
     <p id="quote-error-cache-note" style="font-size:13px;color:#8b949e;margin:0 0 16px 0;"></p>
     <div class="modal-btns">
@@ -488,7 +506,7 @@ body.locked > *:not(#lock-screen) { visibility:hidden; }
 <!-- Row 3: 報價 + 持倉輸入 -->
 <div class="grid-bot">
   <div class="card">
-    <div class="card-title">即時報價 &amp; 持股明細</div>
+    <div class="card-title">市場報價 &amp; 持股明細</div>
     <table class="asset-table">
       <thead>
         <tr><th>標的</th><th>現價</th><th>持股數</th><th class="text-right">市值（TWD）</th></tr>
@@ -752,7 +770,7 @@ function setQuoteStatus(state, detail = '') {
   if (state === 'loading') {
     txt.textContent = '報價載入中…';
   } else if (state === 'ok') {
-    txt.textContent = new Date().toLocaleTimeString('zh-TW') + ' 更新';
+    txt.textContent = new Date().toLocaleTimeString('zh-TW') + ' 更新' + detail;
     hideAlert();
   } else if (state === 'partial') {
     // 部分符號失敗，用快取補齊；Modal 已彈出通知，此處只更新燈號
@@ -792,43 +810,30 @@ function loadPricesCache() {
 // ║              Yahoo Finance 報價抓取                       ║
 // ╚══════════════════════════════════════════════════════════╝
 
-// CORS Proxy 清單
-// 【診斷結論（2025-05）】
-//   ・corsproxy.io   → v7 API 回傳 401（Yahoo 現在需要 Crumb 認證）
-//                      v8 range=1d 回傳 gzip binary → JSON parse 失敗
-//                      v8 range=5d 以上 → JSON 明文，可正常解析 ✓
-//                      Stooq CSV 透過 corsproxy 可正常取得
-// 【2026-08 修正】corsproxy.io 更新 API：舊語法 `?<encoded>` 回傳 403，
-//                 必須改用 `?url=<encoded>`；否則所有標的會全數失敗。
-// 【2026-08 韌性】corsproxy.io 可能回 429/403，AllOrigins 作第二順位獨立備援。
+// 兩個免金鑰 CORS proxy 只轉送公開行情資料，不傳送 Google 憑證或持倉。
+// corsproxy.io 已要求 API key（匿名請求 401），不再列入免金鑰流程。
 const CORS_WRAPS = [
-  u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  u => `https://proxy.cors.dev/?url=${encodeURIComponent(u)}`,
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
 ];
 
-// ── Layer 2 備援：Stooq.com 符號對照表 ──
-// Yahoo Finance symbol → Stooq symbol（格式：{ticker}.{exchange}）
-// 注意：TWD=X（匯率）Stooq 不支援，由 Layer 3 的 Open ER API 處理
-const STOOQ_MAP = {
-  'VT':        'vt.us',
-  'BND':       'bnd.us',
-  '0050.TW':   '0050.tw',
-  '006208.TW': '006208.tw',
-  '2409.TW':   '2409.tw'
-};
+// 臺證交所官方每日收盤資料支援的三個台股代號。
+const TWSE_SYMBOLS = { '0050.TW': '0050', '006208.TW': '006208', '2409.TW': '2409' };
 
 // 嘗試用每個 proxy 抓取同一個 URL，成功即回傳 JSON，全部失敗回傳 null
 // 【gzip 自動解壓】
-//   Yahoo Finance 經 CORS proxy 後常回傳 gzip 壓縮 binary（corsproxy 不解壓），
+//   Yahoo Finance 經 CORS proxy 後有時回傳 gzip 壓縮 binary（代理未解壓），
 //   瀏覽器收到的是壓縮位元組而非明文 JSON → res.json() 直接炸裂。
 //   解法：用 arrayBuffer 取原始位元組，偵測 gzip magic number (0x1f, 0x8b)，
 //   若是 gzip 則用瀏覽器原生 DecompressionStream 解壓後再 JSON.parse。
 async function tryFetch(url, ms = 9000) {
   for (const wrap of CORS_WRAPS) {
     const proxyUrl   = wrap(url);
-    const proxyLabel = proxyUrl.includes('corsproxy') ? 'corsproxy' : 'proxy';
+    const proxyLabel = proxyUrl.includes('proxy.cors.dev') ? 'cors.dev' : 'AllOrigins';
     try {
-      const res = await fetchWithTimeout(proxyUrl, ms);
+      // cors.dev 上游期限 10 秒；AllOrigins 較慢，給備援多一些時間。
+      const res = await fetchWithTimeout(proxyUrl,
+        proxyLabel === 'AllOrigins' ? Math.max(ms, 15000) : Math.max(ms, 11000));
       if (!res.ok) {
         console.warn(`[quotes] ${proxyLabel} HTTP ${res.status} for ${url.slice(0,80)}`);
         continue;
@@ -870,66 +875,31 @@ async function tryFetch(url, ms = 9000) {
   return null;
 }
 
-// 透過 CORS proxy 抓取 URL 並回傳純文字（供 CSV 格式使用）
-// 邏輯與 tryFetch 相同（含 gzip 自動解壓），但最終回傳 string 而非 JSON 物件
-async function tryFetchText(url, ms = 9000) {
-  for (const wrap of CORS_WRAPS) {
-    const proxyUrl   = wrap(url);
-    const proxyLabel = proxyUrl.includes('corsproxy') ? 'corsproxy' : 'proxy';
-    try {
-      const res = await fetchWithTimeout(proxyUrl, ms);
-      if (!res.ok) {
-        console.warn(`[quotes] ${proxyLabel} HTTP ${res.status} for ${url.slice(0,80)}`);
-        continue;
-      }
-      const buf   = await res.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let text;
-      if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-        // gzip 壓縮 → 解壓
-        const stream = new Response(buf).body.pipeThrough(new DecompressionStream('gzip'));
-        text = await new Response(stream).text();
-      } else {
-        text = new TextDecoder('utf-8').decode(buf);
-      }
-      return text;
-    } catch(e) {
-      console.warn(`[quotes] tryFetchText ${proxyLabel} 失敗（${e.name}: ${e.message}）`);
-    }
+// 臺證交所 OpenAPI 一次回傳全部上市標的。只讀取白名單內三支台股，
+// 並檢查 ROC 日期，避免官方端點暫停更新時誤把過期價格當成新報價。
+function parseTwseDaily(rows, now = new Date()) {
+  const result = {};
+  if (!Array.isArray(rows)) return result;
+  for (const [symbol, code] of Object.entries(TWSE_SYMBOLS)) {
+    const row = rows.find(item => item?.Code === code);
+    const rocDate = String(row?.Date ?? '');
+    if (!/^\d{7}$/.test(rocDate)) continue;
+    const date = new Date(Number(rocDate.slice(0, 3)) + 1911,
+                          Number(rocDate.slice(3, 5)) - 1, Number(rocDate.slice(5, 7)));
+    const age = now.getTime() - date.getTime();
+    if (!Number.isFinite(age) || age < -86400000 || age > 14 * 86400000) continue;
+    const price = Number(String(row.ClosingPrice).replaceAll(',', ''));
+    const change = Number(String(row.Change).replaceAll(',', ''));
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const prevClose = Number.isFinite(change) && price - change > 0 ? price - change : null;
+    result[symbol] = { price, prevClose };
   }
-  return null;
+  return result;
 }
 
-// 解析 Stooq.com CSV 格式
-// URL 參數 f=sd2t2ohlcv → 欄位順序：Symbol,Date,Time,Open,High,Low,Close,Volume
-// 回傳 { price, prevClose } 或 null（空字串/N/D 無資料 → null）
-// 註：Stooq 單日 CSV 只有「同日」OHLC，沒有真正的前一交易日收盤；
-//     用同日 open 當前收會把「盤中漲跌」誤標成「日漲幅」，已改為 null
-//     → applyTickerData 會直接跳過 changes[key]，該支不顯示百分比
-function parseStooqCSV(text) {
-  if (!text || !text.trim()) return null;
-  const lines = text.trim().split('\n');
-  if (lines.length < 2) return null;                     // 只有標題沒有資料
-  const cols  = lines[1].split(',');
-  // 欄位索引（0-based）：0=Symbol, 1=Date, 2=Time, 3=Open, 4=High, 5=Low, 6=Close, 7=Volume
-  const closeStr = (cols[6] ?? '').trim();
-  if (closeStr === 'N/D' || closeStr === '' ) return null; // Stooq 無資料標記
-  const close = parseFloat(closeStr);
-  if (!isFinite(close) || close <= 0) return null;
-  return {
-    price:     close,
-    prevClose: null  // 同日 open 不是真前收，回傳 null 讓上層不顯示百分比
-  };
-}
-
-// 用 Stooq.com CSV API 抓取單一股票現價（Layer 2 備援）
-// 失敗（無 Stooq 符號 / 網路錯誤 / 無資料）回傳 null
-async function fetchStooqTicker(yahooSym) {
-  const stooqSym = STOOQ_MAP[yahooSym];
-  if (!stooqSym) return null;  // 此符號 Stooq 不支援（如 TWD=X）
-  const url  = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcv&h&e=csv`;
-  const text = await tryFetchText(url);
-  return parseStooqCSV(text);
+async function fetchTwseDaily() {
+  const rows = await tryFetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', 12000);
+  return parseTwseDaily(rows);
 }
 
 // 用 open.er-api.com 取得 USD/TWD 即時匯率（Layer 3，匯率專用備援）
@@ -959,13 +929,16 @@ function applyTickerData(sym, price, prevClose) {
     : safeNum(price, 0.01, 100000);
   prices[info.key] = p;
   // 匯率不計算漲跌（usdtwd 欄位沒有 changes 顯示需求）
-  if (info.key !== 'usdtwd' && prevClose != null) {
+  if (info.key !== 'usdtwd' && Number.isFinite(Number(prevClose)) && Number(prevClose) > 0) {
     const prev = safeNum(prevClose, 0.01, 100000);
     const chg  = p - prev;
     changes[info.key] = {
       change: safeNum(chg, -100000, 100000),
       pct:    prev > 0 ? safeNum((chg / prev) * 100, -100, 100) : 0
     };
+  } else if (info.key !== 'usdtwd') {
+    // 備援來源無真前收時，不沿用上一輪的漲跌幅。
+    changes[info.key] = null;
   }
 }
 
@@ -1042,7 +1015,7 @@ async function fetchOneTicker(symbol) {
 //
 // 執行順序：
 //   Layer 1  Yahoo Finance Spark API（單次批次）→ v8 chart（缺漏逐支補抓）
-//   Layer 2  Stooq.com CSV（只補 Layer 1 失敗的非匯率標的，平行）
+//   Layer 2  臺證交所官方每日收盤價（只補缺漏的三支台股）
 //   Layer 3  open.er-api.com（只在 TWD=X 仍失敗時觸發）
 //   最終保底 localStorage 快取（補齊仍缺的符號）
 //   仍有失敗 → showQuoteErrorModal(missing)，不可靜默失敗
@@ -1052,10 +1025,11 @@ async function fetchOneTicker(symbol) {
 async function fetchQuotes() {
   pricesReady = false;
   setQuoteStatus('loading');
-  console.group('[quotes] fetchQuotes 開始（三層備援：Yahoo → Stooq → Open ER）');
+  console.group('[quotes] fetchQuotes 開始（三層備援：Yahoo → 臺證交所 → Open ER）');
 
   // 待補全的符號集合（初始為全部 6 支）
   const missing = new Set(Object.keys(TICKER_MAP));
+  let twseUsed = false;
   const total   = missing.size;
 
   // ══ Layer 1：Yahoo Finance Spark 批次 + v8 chart 補漏 ══
@@ -1101,27 +1075,20 @@ async function fetchQuotes() {
   console.info(`[quotes] Layer 1 完成：${total - missing.size}/${total} 支，待補 ${missing.size} 支`);
   console.groupEnd();
 
-  // ══ Layer 2：Stooq.com CSV（補 Yahoo 失敗的非匯率標的）══
-  if (missing.size > 0) {
-    // TWD=X 不在 STOOQ_MAP 裡，filter 後不會觸發 Stooq 請求
-    const stooqTargets = [...missing].filter(sym => sym in STOOQ_MAP);
-    if (stooqTargets.length > 0) {
-      console.group('[quotes] Layer 2: Stooq.com CSV');
-      const stooqResults = await Promise.all(
-        stooqTargets.map(async sym => ({ sym, data: await fetchStooqTicker(sym) }))
-      );
-      stooqResults.forEach(({ sym, data }) => {
-        if (data?.price) {
-          applyTickerData(sym, data.price, data.prevClose);
-          missing.delete(sym);
-          console.info(`[quotes] L2 ✓ ${sym} = ${data.price}`);
-        } else {
-          console.warn(`[quotes] L2 ✗ ${sym} 無資料`);
-        }
-      });
-      console.info(`[quotes] Layer 2 完成：待補 ${missing.size} 支`);
-      console.groupEnd();
+  // ══ Layer 2：臺證交所官方日收盤價（只補缺漏台股）══
+  if ([...missing].some(sym => sym in TWSE_SYMBOLS)) {
+    console.group('[quotes] Layer 2: 臺灣證券交易所 OpenAPI');
+    const twseData = await fetchTwseDaily();
+    for (const sym of [...missing].filter(item => item in TWSE_SYMBOLS)) {
+      const data = twseData[sym];
+      if (!data) continue;
+      applyTickerData(sym, data.price, data.prevClose);
+      missing.delete(sym);
+      twseUsed = true;
+      console.info(`[quotes] L2 ✓ ${sym} = ${data.price}（官方日收盤價）`);
     }
+    console.info(`[quotes] Layer 2 完成：待補 ${missing.size} 支`);
+    console.groupEnd();
   }
 
   // ══ Layer 3：open.er-api.com（TWD=X 匯率專用備援）══
@@ -1143,7 +1110,7 @@ async function fetchQuotes() {
     // 全部成功 → 存快取、關閉先前的錯誤 modal（若有）
     pricesReady = true;
     savePricesCache();
-    setQuoteStatus('ok');
+    setQuoteStatus('ok', twseUsed ? '（台股備援：最近交易日收盤）' : '');
     hideQuoteErrorModal();
     console.info('[quotes] ✅ 全部報價取得成功');
   } else {
@@ -1956,6 +1923,8 @@ function showConfigModal() {
   clientInput.value = isValidClientId(savedId) ? savedId : '';
   clientInput.setCustomValidity('');
   document.getElementById('config-sheet-id').value  = getSheetId();
+  // 不把 sessionStorage 的密鑰回填到 DOM；留白代表維持目前設定。
+  document.getElementById('config-secret-input').value = '';
   document.getElementById('config-modal').classList.add('show');
   // 自動 focus 到第一個空白欄位
   setTimeout(() => {
@@ -1968,13 +1937,15 @@ function showConfigModal() {
 // 關閉設定彈窗
 function hideConfigModal() {
   document.getElementById('config-modal').classList.remove('show');
+  document.getElementById('config-secret-input').value = '';
 }
 
-// 儲存設定：驗證非空後存入 localStorage，繼續 OAuth 流程
-function confirmConfig() {
+// 設定錯誤可直接修正：只有換 CLIENT_ID 才需要重新授權；只換 SHEET_ID 則沿用授權重新讀取。
+async function confirmConfig() {
   const clientInput = document.getElementById('config-client-id');
   const cid = clientInput.value.trim();
   const sid = document.getElementById('config-sheet-id').value.trim();
+  const secret = document.getElementById('config-secret-input').value.trim();
   if (!isValidClientId(cid)) {
     clientInput.setCustomValidity('請輸入以 .apps.googleusercontent.com 結尾的 OAuth 用戶端 ID；GOCSPX- 開頭的是用戶端密鑰。');
     clientInput.reportValidity();
@@ -1983,10 +1954,25 @@ function confirmConfig() {
   }
   clientInput.setCustomValidity('');
   if (!sid) { document.getElementById('config-sheet-id').focus();  return; }
+  const clientChanged = cid !== getClientId();
+  if (clientChanged) clearTokens();  // 舊 client 的 token 不可用於新的 OAuth client
   localStorage.setItem(LS.CLIENT_ID, cid);
   localStorage.setItem(LS.SHEET_ID,  sid);
+  if (secret) sessionStorage.setItem(LS.SECRET, secret);
   hideConfigModal();
-  startOAuth();  // 設定完成後立即繼續 OAuth 流程
+  updateGoogleStatus();
+  if (isAuthenticated()) await syncFromSheets();
+  else startOAuth();
+}
+
+function showSheetsErrorModal(error) {
+  const detail = error?.message || '未知的連線錯誤';
+  document.getElementById('sheets-error-detail').textContent = `錯誤資訊：${detail}`;
+  document.getElementById('sheets-error-modal').classList.add('show');
+}
+
+function hideSheetsErrorModal() {
+  document.getElementById('sheets-error-modal').classList.remove('show');
 }
 
 // 從 sessionStorage 取得用戶端密鑰
@@ -2353,6 +2339,7 @@ async function appendSnapshotToSheets(h) {
 async function syncFromSheets() {
   try {
     const data = await sheetsGet(`${SHEET_NAME}!A:L`);
+    hideSheetsErrorModal();
     const rows = (data.values ?? []).slice(1);  // 跳過第一行標題
     if (!rows.length) return;
     // 將每行原始字串轉換成結構化物件
@@ -2374,7 +2361,8 @@ async function syncFromSheets() {
     renderSnapshots();
     restoreLatestSnapshot();  // Sheets 可能有比本機更新的快照，同步後立即還原
   } catch(e) {
-    showAlert('⚠ Google Sheets 讀取失敗：' + e.message);
+    // 網路錯誤不代表 OAuth 設定錯誤；保留 token 與本機快照，讓使用者決定重試或修改設定。
+    showSheetsErrorModal(e);
   }
 }
 
@@ -2778,6 +2766,15 @@ function stopIdleWatch() {
   document.getElementById('config-cancel')       .addEventListener('click', hideConfigModal);
   document.getElementById('config-confirm')      .addEventListener('click', confirmConfig);
   document.getElementById('config-client-id')    .addEventListener('input', e => e.target.setCustomValidity(''));
+  document.getElementById('sheets-error-close')  .addEventListener('click', hideSheetsErrorModal);
+  document.getElementById('sheets-error-config') .addEventListener('click', () => {
+    hideSheetsErrorModal();
+    showConfigModal();
+  });
+  document.getElementById('sheets-error-retry')  .addEventListener('click', () => {
+    hideSheetsErrorModal();
+    syncFromSheets();  // 若仍失敗，同一個 Modal 會再次顯示，不會疊加。
+  });
   document.getElementById('secret-cancel')       .addEventListener('click', closeSecretModal);
   document.getElementById('secret-confirm')      .addEventListener('click', confirmSecret);
   // 報價錯誤 Modal 按鈕

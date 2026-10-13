@@ -22,7 +22,7 @@
 - **產品**：個人退休資產儀表板，追蹤 3,000 萬 TWD 目標、每月 7 萬投資現金流。
 - **架構**：**單一** `index.html`（約 2,200 行，內嵌所有 HTML/CSS/JS），**無後端、無 build step**。下載後瀏覽器直接開啟即可用。
 - **同步**：所有歷史快照存於使用者自己的 Google Sheets（OAuth PKCE 授權），跨裝置一致。
-- **報價**：三層瀑布備援 —— Yahoo Finance v8 → Stooq CSV → open.er-api.com（僅補匯率）。
+- **報價**：三層瀑布備援 —— Yahoo Finance Spark/v8 → 臺證交所 OpenAPI（僅台股日收盤）→ open.er-api.com（僅補匯率）。
 - **部署**：GitHub Pages 公開 repo，敏感 ID / secret 全部走執行期輸入，**原始碼零憑證**。
 
 詳見 [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md)。
@@ -67,7 +67,7 @@ python update-csp-hash.py
 
 ### 3.2 CSP `connect-src` 白名單
 
-新增任何外部網域（新 CORS proxy、新 API、新 CDN）都必須同步加進 `<meta http-equiv="Content-Security-Policy">` 的 `connect-src` / `script-src` / `img-src` 名單。忘記加 → 瀏覽器 console 出現 `Refused to connect to ...`。
+新增任何瀏覽器**實際連線**的外部網域（新 CORS proxy、新 API、新 CDN）都必須同步加進 `<meta http-equiv="Content-Security-Policy">` 的 `connect-src` / `script-src` / `img-src` 名單；經 proxy 轉送的上游網址不必列入。忘記加 → 瀏覽器 console 出現 `Refused to connect to ...`。
 
 ### 3.3 外部 CDN 必附 SRI
 
@@ -86,16 +86,16 @@ python update-csp-hash.py
 | Layer | 來源 | 走 CORS Proxy | 支援標的 | 失敗時 |
 |-------|------|--------------|---------|--------|
 | 1 | Yahoo Finance Spark 批次 + v8 chart 補漏 | 是（雙 proxy） | 全部 6 支 | 進 Layer 2 |
-| 2 | Stooq.com CSV | 是（雙 proxy） | 5 支股票（不含 `TWD=X`） | 進 Layer 3（僅 TWD=X） |
+| 2 | 臺證交所 OpenAPI 日收盤 | 是（雙 proxy） | 0050.TW、006208.TW、2409.TW | 進 Layer 3（僅 TWD=X） |
 | 3 | `open.er-api.com` | 否，原生 CORS | 僅 `TWD=X` | localStorage 快取補齊 |
 
 **已知眉角**：
 
-- **corsproxy.io 語法**：必用 `https://corsproxy.io/?url=<encoded>`。舊寫法 `?<encoded>` 於 2026-08 起回傳 HTTP 403（Commit `b306cd8` 的修正即此案）。
-- **proxy 順序**：所有 Yahoo / Stooq 請求依序嘗試 `corsproxy.io` → `api.allorigins.win`；兩者都失敗才進下一資料來源。
-- **gzip 自動解壓**：Yahoo 經 proxy 有時回傳 gzip binary，`tryFetch` / `tryFetchText` 用瀏覽器原生 `DecompressionStream` 偵測 magic number `0x1f 0x8b` 並解壓，勿改壞這段。
+- **免金鑰 proxy 順序**：Yahoo / 臺證交所依序嘗試 `proxy.cors.dev` → `api.allorigins.win`；2026-10-13 實測 `corsproxy.io` 匿名請求 401，已移除。
+- **Stooq 已移除**：既有五支 CSV 路徑實測均回 404；不得未經重新驗證就放回備援。
+- **gzip 自動解壓**：Yahoo 經 proxy 有時回傳 gzip binary，`tryFetch` 用瀏覽器原生 `DecompressionStream` 偵測 magic number `0x1f 0x8b` 並解壓，勿改壞這段。
 - **Yahoo 查詢策略**：全量 Spark → 缺漏 Spark 重試一次 → v8 chart 逐支補漏並固定 `range=5d`；v7 `/quote` 已需 Crumb 認證，永久 401，**不得復活**。
-- **Stooq 前收**：Stooq 單日 CSV 沒有真前收，`parseStooqCSV` 刻意回傳 `prevClose: null`；不要「順手補上」用 open 當前收，那是舊 v1 快取 bug 的成因。
+- **臺股備援是日收盤價**：`parseTwseDaily` 拒絕超過 14 天的資料；不能標成盤中即時報價。`Change` 無效時不推估前收。
 - **快取版本鑰**：`LS.PRICES = 'wd_prices_v2'`。若快取 schema 再改，**必須改 v3**，否則舊裝置讀到爛資料。
 - **失敗必彈 modal**：任何符號在 3 層都失敗 → `showQuoteErrorModal(missing)`，不可靜默降級為 0。
 
@@ -125,7 +125,7 @@ python update-csp-hash.py
 3. 輸入 `window._runChecks()`
 4. 檢視測試結果表（含純函式單元測試與瀑布備援 mock 整合測試）
 
-**動 `parseStooqCSV` / `safeNum` / `fracYear` / `fetchQuotes` 相關程式碼後，必須跑一次 `_runChecks()` 並貼出結果**。有測試 fail → 不得交付。
+**動 `parseTwseDaily` / `safeNum` / `fracYear` / `fetchQuotes` 相關程式碼後，必須跑一次 `_runChecks()` 並貼出結果**。有測試 fail → 不得交付。
 
 ---
 
@@ -164,7 +164,7 @@ python update-csp-hash.py
 1. **改 `<script>` 忘更新 CSP hash** → 頁面白畫面。動 script 一定跑 `python update-csp-hash.py`。
 2. **把 `CLIENT_SECRET` 塞回原始碼「方便測試」** → 立即回退，本 repo 是 Public。
 3. **新增 CORS proxy 忘加 `connect-src`** → console 出 `Refused to connect`，功能靜默壞掉。
-4. **用「合理猜測」寫 Stooq 前收** → parseStooqCSV 早就故意回 `null`，勿當 bug 修。
+4. **把臺證交所日收盤當盤中價** → 這是最近交易日收盤資料；需清楚標示來源與時間。
 5. **改快取 schema 沒 bump `LS.PRICES` 版本** → 舊裝置讀到不相容資料。
 6. **在 Yahoo v8 用 `range=1d`** → 回 gzip 但缺前收；固定用 `range=5d`。
 7. **把 UI 文字或 log 改成英文** → 本專案 UI 全繁中，違反 §0 語言規則。

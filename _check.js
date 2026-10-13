@@ -6,7 +6,7 @@
 // ║  即可執行全部測試並在 Console 輸出結果。                  ║
 // ║                                                          ║
 // ║  包含：                                                   ║
-// ║    1. 純函式單元測試（parseStooqCSV / safeNum / fracYear）║
+// ║    1. 純函式單元測試（parseTwseDaily / safeNum / fracYear）║
 // ║    2. 瀑布備援整合測試（mock fetch 模擬各層失敗場景）      ║
 // ╚══════════════════════════════════════════════════════════╝
 
@@ -123,58 +123,37 @@ function testFracYear() {
 }
 
 // ──────────────────────────────────────────────────────────
-//  Section 3：parseStooqCSV 單元測試
-//  parseStooqCSV 定義於 index.html 全域作用域
+//  Section 3：臺證交所官方日資料解析測試
 // ──────────────────────────────────────────────────────────
 
-function testParseStooqCSV() {
-  // ── 3.1 正常 CSV（f=sd2t2ohlcv 格式）────────────────────
-  // 欄位：Symbol, Date, Time, Open, High, Low, Close, Volume
-  const normalCSV = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    'VT.US,2026-05-07,16:00:00,110.50,111.20,110.10,111.05,3500000'
-  ].join('\n');
-  const r1 = parseStooqCSV(normalCSV);
-  assertNotNull('parseStooqCSV: 正常 CSV 不為 null', r1);
-  assert('parseStooqCSV: 正常 CSV price = 111.05', r1?.price, 111.05);
-  assertNull('parseStooqCSV: 單日 CSV 無真前收', r1?.prevClose);
+function testParseTwseDaily() {
+  const now = new Date(2026, 9, 13);
+  const rows = [
+    { Code:'0050', Date:'1151012', ClosingPrice:'114.80', Change:'-0.15' },
+    { Code:'006208', Date:'1151012', ClosingPrice:'263.15', Change:'+0.25' },
+    { Code:'2409', Date:'1151012', ClosingPrice:'35.55', Change:'X' }
+  ];
+  const data = parseTwseDaily(rows, now);
+  assert('臺證交所：0050 收盤價', data['0050.TW']?.price, 114.8);
+  assert('臺證交所：0050 真前收', data['0050.TW']?.prevClose, 114.95, 0.000001);
+  assert('臺證交所：006208 收盤價', data['006208.TW']?.price, 263.15);
+  assertNull('臺證交所：無漲跌資料不推估前收', data['2409.TW']?.prevClose);
+  assert('臺證交所：拒絕逾期資料', Object.keys(parseTwseDaily(rows, new Date(2026, 10, 1))).length, 0);
+  assert('臺證交所：拒絕非陣列資料', Object.keys(parseTwseDaily(null, now)).length, 0);
+  assert('臺證交所：拒絕無效價格', Object.keys(parseTwseDaily([{ ...rows[0], ClosingPrice:'--' }], now)).length, 0);
+}
 
-  // ── 3.2 空字串 → null ────────────────────────────────────
-  assertNull('parseStooqCSV: 空字串回傳 null', parseStooqCSV(''));
-
-  // ── 3.3 只有標題沒有資料 → null ──────────────────────────
-  assertNull('parseStooqCSV: 只有標題行回傳 null',
-    parseStooqCSV('Symbol,Date,Time,Open,High,Low,Close,Volume\n'));
-
-  // ── 3.4 Stooq 無資料標記 N/D → null ─────────────────────
-  const ndCSV = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    'VT.US,2026-05-07,16:00:00,N/D,N/D,N/D,N/D,0'
-  ].join('\n');
-  assertNull('parseStooqCSV: N/D 標記回傳 null', parseStooqCSV(ndCSV));
-
-  // ── 3.5 Close 為 0 → null（無效報價）────────────────────
-  const zeroCSV = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    'VT.US,2026-05-07,16:00:00,0,0,0,0,0'
-  ].join('\n');
-  assertNull('parseStooqCSV: Close=0 回傳 null', parseStooqCSV(zeroCSV));
-
-  // ── 3.6 Close 為負值 → null ───────────────────────────────
-  const negCSV = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    'VT.US,2026-05-07,16:00:00,110,-5,-5,-5,0'
-  ].join('\n');
-  assertNull('parseStooqCSV: Close<0 回傳 null', parseStooqCSV(negCSV));
-
-  // ── 3.7 Open 無效但 Close 有效 ──────────────────────────
-  const noOpenCSV = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    'VT.US,2026-05-07,16:00:00,,111.0,109.0,110.5,1000'
-  ].join('\n');
-  const r7 = parseStooqCSV(noOpenCSV);
-  assertNotNull('parseStooqCSV: Open 空白仍可解析 Close', r7);
-  assertNull('parseStooqCSV: Open 空白時 prevClose 仍為 null', r7?.prevClose);
+function testQuoteWithoutPreviousClose() {
+  const oldPrice = prices.auo;
+  const oldChange = changes.auo;
+  try {
+    changes.auo = { change: 2, pct: 5 };
+    applyTickerData('2409.TW', 15, null);
+    assertNull('無前收備援：清除上一輪漲跌幅', changes.auo);
+  } finally {
+    prices.auo = oldPrice;
+    changes.auo = oldChange;
+  }
 }
 
 // ──────────────────────────────────────────────────────────
@@ -193,7 +172,7 @@ function mockFetch(urlHandlers, defaultHandler) {
     try {
       const parsed = new URL(proxyUrl);
       proxyHost = parsed.hostname;
-      if ((proxyHost === 'corsproxy.io' || proxyHost === 'api.allorigins.win') && parsed.searchParams.has('url')) {
+      if ((proxyHost === 'proxy.cors.dev' || proxyHost === 'api.allorigins.win') && parsed.searchParams.has('url')) {
         urlStr = parsed.searchParams.get('url');
       }
     } catch (e) {}
@@ -230,13 +209,17 @@ function failResponse(status = 503) {
   return new Response('error', { status });
 }
 
-// 建立模擬 Stooq CSV Response
-function stooqOkResponse(symbol, open, close) {
-  const csv = [
-    'Symbol,Date,Time,Open,High,Low,Close,Volume',
-    `${symbol},2026-05-07,16:00:00,${open},${close},${open},${close},100000`
-  ].join('\n');
-  return new Response(csv, { status: 200 });
+// 建立模擬臺證交所 OpenAPI Response
+function twseOkResponse() {
+  const today = new Date();
+  const date = String(today.getFullYear() - 1911).padStart(3, '0')
+    + String(today.getMonth() + 1).padStart(2, '0')
+    + String(today.getDate()).padStart(2, '0');
+  return new Response(JSON.stringify([
+    { Code:'0050', Date:date, ClosingPrice:'169.00', Change:'+1.00' },
+    { Code:'006208', Date:date, ClosingPrice:'86.00', Change:'+0.50' },
+    { Code:'2409', Date:date, ClosingPrice:'16.00', Change:'-0.25' }
+  ]), { status: 200 });
 }
 
 // 建立模擬 Open ER API Response
@@ -296,13 +279,13 @@ async function runIntegrationTests() {
     integResults.push({ name: '場景1: Yahoo 全部成功 → pricesReady=true', ok: pricesReady });
     integResults.push({ name: '場景1: Yahoo 全部成功 → modal 不出現', ok: !modalShown });
     integResults.push({ name: '場景1: Yahoo 全部成功 → prices.usdtwd = 32', ok: prices.usdtwd === 32 });
-    integResults.push({ name: '場景1: Yahoo proxy 逐支序列請求', ok: maxActiveYahoo === 1 });
+    integResults.push({ name: '場景1: Yahoo 批次單一請求', ok: maxActiveYahoo === 1 });
     integResults.push({ name: '場景1: Yahoo 全部成功僅需 1 個 request', ok: yahooRequestCount === 1 });
 
     window.showQuoteErrorModal = origShow;
   })();
 
-  // ── 截圖回歸：首輪 Spark 缺 VT/2409.TW，corsproxy 節流，AllOrigins 補回 ──
+  // ── 截圖回歸：首輪 Spark 缺 VT/2409.TW，主代理故障，AllOrigins 補回 ──
   await (async () => {
     reset();
     let modalShown = false;
@@ -318,7 +301,7 @@ async function runIntegrationTests() {
         if (sparkRequestCount === 1) {
           return yahooSparkOkResponse({ BND:73, '0050.TW':168, '006208.TW':85, 'TWD=X':32 });
         }
-        if (proxyHost === 'corsproxy.io') return failResponse(429);
+        if (proxyHost === 'proxy.cors.dev') return failResponse(429);
         if (proxyHost === 'api.allorigins.win') {
           return yahooSparkOkResponse({ VT:110, '2409.TW':15 });
         }
@@ -327,8 +310,7 @@ async function runIntegrationTests() {
       'query1.finance.yahoo.com/v8/finance/chart': () => {
         v8RequestCount++;
         return failResponse(429);
-      },
-      'stooq.com': () => failResponse(404)
+      }
     });
 
     await fetchQuotes();
@@ -343,7 +325,7 @@ async function runIntegrationTests() {
     window.showQuoteErrorModal = origShow;
   })();
 
-  // ── 場景 2：Yahoo 部分失敗（VT/TWD=X 失敗），Stooq 補 VT，ER API 補 TWD=X ──
+  // ── 場景 2：Yahoo 缺台股與匯率，臺證交所與 Open ER 分別補齊 ──
   await (async () => {
     reset();
     let modalShown = false;
@@ -351,18 +333,14 @@ async function runIntegrationTests() {
     window.showQuoteErrorModal = () => { modalShown = true; };
 
     window.fetch = mockFetch({
-      // Yahoo：只有 BND/0050/006208/2409 成功，VT 和 TWD=X 失敗
+      // Yahoo：0050.TW、TWD=X 失敗，其餘成功
       'query1.finance.yahoo.com': url => {
         const sym = decodeURIComponent(url.split('/chart/')[1]?.split('?')[0] ?? '');
-        if (sym === 'VT' || sym === 'TWD=X') return failResponse(401);
-        const priceMap = { BND:73, '0050.TW':168, '006208.TW':85, '2409.TW':15 };
+        if (sym === '0050.TW' || sym === 'TWD=X') return failResponse(401);
+        const priceMap = { VT:110, BND:73, '006208.TW':85, '2409.TW':15 };
         return priceMap[sym] ? yahooOkResponse(sym, priceMap[sym], priceMap[sym]-1) : failResponse();
       },
-      // Stooq：VT 成功
-      'stooq.com': url => {
-        if (url.includes('vt.us')) return stooqOkResponse('VT.US', 110, 111);
-        return failResponse();
-      },
+      'openapi.twse.com.tw': () => twseOkResponse(),
       // Open ER：TWD=X 成功
       'open.er-api.com': () => erOkResponse(31.5)
     });
@@ -371,7 +349,7 @@ async function runIntegrationTests() {
 
     integResults.push({ name: '場景2: 部分失敗→補齊 → pricesReady=true', ok: pricesReady });
     integResults.push({ name: '場景2: 部分失敗→補齊 → modal 不出現', ok: !modalShown });
-    integResults.push({ name: '場景2: Stooq 補 VT → prices.vt = 111', ok: prices.vt === 111 });
+    integResults.push({ name: '場景2: 臺證交所補 0050 → prices.tw0050 = 169', ok: prices.tw0050 === 169 });
     integResults.push({ name: '場景2: ER API 補 TWD=X → prices.usdtwd = 31.5', ok: prices.usdtwd === 31.5 });
 
     window.showQuoteErrorModal = origShow;
@@ -572,6 +550,30 @@ async function testRefreshWithoutSecret() {
   }
 }
 
+async function testSheetsReadRecovery() {
+  const originalGet = window.sheetsGet;
+  const originalClear = window.clearTokens;
+  const modal = document.getElementById('sheets-error-modal');
+  let tokenCleared = false;
+  window.clearTokens = () => { tokenCleared = true; };
+  try {
+    window.sheetsGet = async () => { throw new TypeError('Failed to fetch'); };
+    await syncFromSheets();
+    assert('Sheets 讀取失敗：顯示重試視窗', modal.classList.contains('show'), true);
+    assert('Sheets 讀取失敗：保留授權', tokenCleared, false);
+    assert('Sheets 讀取失敗：顯示錯誤原因',
+      document.getElementById('sheets-error-detail').textContent.includes('Failed to fetch'), true);
+
+    window.sheetsGet = async () => ({ values: [] });
+    await syncFromSheets();
+    assert('Sheets 重試成功：關閉錯誤視窗', modal.classList.contains('show'), false);
+  } finally {
+    window.sheetsGet = originalGet;
+    window.clearTokens = originalClear;
+    hideSheetsErrorModal();
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 //  主要入口：window._runChecks()
 // ──────────────────────────────────────────────────────────
@@ -589,12 +591,14 @@ window._runChecks = async function() {
   try { testSafeNum();      } catch(e) { results.push({ name:'testSafeNum（例外）', ok:false, message:e.message }); }
   try { testClientIdValidation(); } catch(e) { results.push({ name:'testClientIdValidation（例外）', ok:false, message:e.message }); }
   try { testFracYear();     } catch(e) { results.push({ name:'testFracYear（例外）', ok:false, message:e.message }); }
-  try { testParseStooqCSV();} catch(e) { results.push({ name:'testParseStooqCSV（例外）', ok:false, message:e.message }); }
+  try { testParseTwseDaily();} catch(e) { results.push({ name:'testParseTwseDaily（例外）', ok:false, message:e.message }); }
+  try { testQuoteWithoutPreviousClose(); } catch(e) { results.push({ name:'testQuoteWithoutPreviousClose（例外）', ok:false, message:e.message }); }
   try { await testLockScreen(); } catch(e) { results.push({ name:'testLockScreen（例外）', ok:false, message:e.message }); }
   try { testCalculateCAGR(); } catch(e) { results.push({ name:'testCalculateCAGR（例外）', ok:false, message:e.message }); }
   try { await testFetchHistoricalReturns(); } catch(e) { results.push({ name:'testFetchHistoricalReturns（例外）', ok:false, message:e.message }); }
   try { await testSheetsHttpErrors(); } catch(e) { results.push({ name:'testSheetsHttpErrors（例外）', ok:false, message:e.message }); }
   try { await testRefreshWithoutSecret(); } catch(e) { results.push({ name:'testRefreshWithoutSecret（例外）', ok:false, message:e.message }); }
+  try { await testSheetsReadRecovery(); } catch(e) { results.push({ name:'testSheetsReadRecovery（例外）', ok:false, message:e.message }); }
 
   const unitPass = results.filter(r => r.ok).length;
   const unitFail = results.filter(r => !r.ok).length;

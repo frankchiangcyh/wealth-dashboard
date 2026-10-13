@@ -18,7 +18,7 @@
 | 項目 | 決策 | 理由 |
 |------|------|------|
 | 架構 | 單一 `index.html`，無後端 | 最簡部署，本機直接開啟可用 |
-| 即時報價 | 三層備援：Yahoo Finance v8 → Stooq.com CSV → open.er-api.com | 零 API Key，任一來源失敗自動切換 |
+| 即時報價 | Yahoo Finance Spark/v8 → 臺證交所 OpenAPI（台股）→ open.er-api.com（匯率） | 免 API Key；缺漏符號逐層補齊 |
 | 資料儲存 | Google Sheets API v4 | 跨裝置同步、免費、可直接檢視 |
 | 認證 | Google OAuth 2.0（PKCE flow） | 只有本人能存取；純前端可用 |
 | 部署 | GitHub Pages（Public Repo） | 靜態托管，HTTPS 免費，支援 OAuth redirect；敏感 ID 已移出原始碼 |
@@ -122,25 +122,25 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 | 項目 | 值 |
 |------|----|
 | Endpoint | Spark 批次 `/v7/finance/spark?symbols=...&interval=1d&range=5d`；缺漏時補抓 `/v8/finance/chart/{symbol}` |
-| CORS proxy | `corsproxy.io` → `api.allorigins.win` |
+| CORS proxy | `proxy.cors.dev` → `api.allorigins.win`（僅公開行情，絕不傳憑證） |
 | 回應格式 | JSON（可能 gzip，`tryFetch` 自動偵測解壓） |
 | 支援標的 | 全部 6 支（VT、BND、0050.TW、006208.TW、2409.TW、TWD=X） |
 | 現價欄位 | Spark `result[].response[0].meta.regularMarketPrice` |
 | 前收欄位 | `meta.chartPreviousClose`（計算漲跌幅） |
 | 已棄用 | v7 `/quote` 自 2024 年起需 Crumb Cookie 認證 → 永久 401 |
 
-### Layer 2：Stooq.com CSV（第一備援）
+### Layer 2：臺灣證券交易所 OpenAPI（日收盤價備援）
 
 | 項目 | 值 |
 |------|----|
-| Endpoint | `https://stooq.com/q/l/?s={stooqSymbol}&f=sd2t2ohlcv&h&e=csv` |
-| CORS proxy | `corsproxy.io` → `api.allorigins.win` |
-| 回應格式 | CSV 文字（`tryFetchText` 取得，`parseStooqCSV` 解析） |
-| 支援標的 | VT、BND、0050.TW、006208.TW、2409.TW（**不含 TWD=X**） |
-| 現價欄位 | CSV 第 7 欄（Close，0-indexed = col 6） |
-| 前收欄位 | 無；單日 CSV 的 Open 不是真正前收，`prevClose` 固定為 `null` |
+| Endpoint | `https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL` |
+| CORS proxy | `proxy.cors.dev` → `api.allorigins.win` |
+| 回應格式 | JSON 陣列；只採用 14 天內的上市標的資料 |
+| 支援標的 | 0050.TW、006208.TW、2409.TW；不支援美股與匯率 |
+| 現價欄位 | `ClosingPrice`；為**最近交易日收盤價**，不是盤中即時價 |
+| 前收欄位 | `ClosingPrice - Change`；Change 無效時不顯示漲跌幅 |
 
-**Stooq 符號對照**：`VT→vt.us`、`BND→bnd.us`、`0050.TW→0050.tw`、`006208.TW→006208.tw`、`2409.TW→2409.tw`
+**來源限制**：臺證交所公開端點不支援 VT/BND；兩支美股仍依賴 Yahoo Finance 及其 proxy。2026-10-13 實測 Stooq 上述五支 CSV 路徑均回 404，已移除。
 
 ### Layer 3：open.er-api.com（匯率專用）
 
@@ -154,8 +154,8 @@ Google Sheets API append（日期 / 淨資產 / 各標的市值 / 配置比例�
 
 ### 流程與錯誤處理
 
-- **瀑布式**：Layer 1 全量 Spark、缺漏 Spark 重試一次、v8 逐支補漏 → Layer 2 補失敗的非匯率標的 → Layer 3 補 TWD=X
-- **proxy 備援**：Yahoo / Stooq 依序嘗試 `corsproxy.io`、`api.allorigins.win`，避免單一 proxy 節流造成全層失效
+- **瀑布式**：Layer 1 全量 Spark、缺漏 Spark 重試一次、v8 逐支補漏 → Layer 2 補缺漏的三支台股 → Layer 3 補 TWD=X
+- **proxy 備援**：Yahoo / 臺證交所依序嘗試免金鑰 `proxy.cors.dev`、`api.allorigins.win`。2026-10-13 實測 `corsproxy.io` 匿名請求 401、要求 API key，已移除。免費代理可能節流，無服務水準保證。
 - **快取保底**：全層失敗的符號從 localStorage 快取補齊
 - **Modal 通知**：任何符號在全 3 層均失敗 → `showQuoteErrorModal(missing)` 彈出，列出失敗標的，不可靜默失敗
 - **不重複疊加**：再次失敗時更新現有 modal 內容，不新增第二個
@@ -347,16 +347,16 @@ Step 3  建立 GitHub Private Repo
 | 狀態 | 項目 | 說明 |
 |------|------|------|
 | [x] | gzip 自動解壓 | `DecompressionStream('gzip')` 偵測 magic bytes 解壓 |
-| [x] | Layer 2 Stooq 備援 | `fetchStooqTicker` + `parseStooqCSV` + `STOOQ_MAP` |
+| [x] | Layer 2 臺證交所備援 | `fetchTwseDaily` + `parseTwseDaily`，只補三支台股的日收盤價 |
 | [x] | Layer 3 Open ER 備援 | `fetchExchangeRate`，僅 TWD=X，無需 CORS proxy |
 | [x] | `applyTickerData` 共用 | DRY 化 prices/changes 寫入，三層共用同一函式 |
 | [x] | 三層瀑布 `fetchQuotes` | missing Set 追蹤、平行請求、逐層補齊 |
 | [x] | 報價錯誤 Modal | 列出失敗標的、快取時間提示、重試按鈕、不可靜默失敗 |
 | [x] | `setQuoteStatus('partial')` | 部分失敗狀態燈號，不重複觸發 alert banner |
-| [x] | CSP 更新 | 加入 `stooq.com`、`open.er-api.com`、`api.allorigins.win` |
-| [x] | `_check.js` 測試 | 單元測試（parseStooqCSV、safeNum、fracYear）+ 整合測試（mock fetch） |
+| [x] | CSP 更新 | 允許 `proxy.cors.dev`、`api.allorigins.win`、`open.er-api.com` |
+| [x] | `_check.js` 測試 | 單元測試（parseTwseDaily、safeNum、fracYear）+ 整合測試（mock fetch） |
 
-**驗收標準**：Console 執行 `window._runChecks()` 全部通過；Yahoo 失敗時自動切 Stooq；TWD=X 失敗時自動切 Open ER；任何符號全層失敗時彈出 Modal。
+**驗收標準**：Console 執行 `window._runChecks()` 全部通過；Yahoo 台股失敗時改用臺證交所日收盤價；TWD=X 失敗時改用 Open ER；任何符號全層失敗時彈出 Modal。
 
 ---
 
@@ -444,8 +444,8 @@ Step 5  日常使用
 
 | 風險 | 嚴重度 | 應對方式 |
 |------|--------|---------|
-| Yahoo Finance API CORS 限制 | 低 | 三層備援（Yahoo → Stooq → Open ER）；任一失敗自動切換，Modal 通知 |
-| Yahoo Finance 結構改版 | 低 | `fetchOneTicker` 集中 Yahoo 解析；Stooq/ER 作為長期備援，不依賴 Yahoo 單點 |
+| Yahoo Finance API CORS 限制 | 中 | 免金鑰代理雙路備援；三支台股另有臺證交所、匯率另有 Open ER，VT/BND 無獨立免費來源 |
+| Yahoo Finance 結構改版 | 中 | `fetchOneTicker` 集中解析；台股與匯率可備援，VT/BND 仍依賴 Yahoo |
 | Google OAuth PKCE 在本機 `file://` 無法運作 | 低 | 本機使用 `http://localhost`（需簡易 HTTP server）或直接用 Pages URL |
 | `refresh_token` 存在 localStorage 被 XSS 竊取 | 低 | 嚴格 CSP（SHA-384 鎖定 inline script）+ SRI 防 CDN 竄改；無法注入第三方 JS |
 | Google Sheets API quota（100 req/100s） | 極低 | 個人使用每日寥寥幾次，遠低於限額 |
